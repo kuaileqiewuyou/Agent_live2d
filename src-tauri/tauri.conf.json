@@ -1,0 +1,35 @@
+{
+  "$schema": "https://raw.githubusercontent.com/niceful/tauri-v2-schemas/main/tauri.conf.json",
+  "productName": "AI伙伴",
+  "version": "0.1.0",
+  "identifier": "com.agent-live2d.app",
+  "build": {
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:1420",
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build"
+  },
+  "app": {
+    "title": "AI 伙伴",
+    "windows": [
+      {
+        "title": "AI 伙伴",
+        "width": 1280,
+        "height": 800,
+        "minWidth": 960,
+        "minHeight": 640,
+        "resizable": true,
+        "center": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "plugins": {
+    "dialog": {},
+    "fs": {
+      "scope": ["**"]
+    }
+  }
+}

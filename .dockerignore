@@ -1,0 +1,11 @@
+node_modules
+dist
+src-tauri/target
+.venv
+__pycache__
+.pytest_cache
+data
+.env
+.env.development
+.env.production
+

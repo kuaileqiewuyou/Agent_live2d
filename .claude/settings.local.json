@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find 'd:/Develop/vscode Workspace/Agent_live2d/' -maxdepth 3 -not -path */node_modules/* -not -path */.git/* -not -path */target/*)",
+      "Bash(npm --version)",
+      "Bash(cargo --version)",
+      "Bash(where cargo:*)",
+      "Bash(npm create:*)",
+      "Bash(npx create-vite@latest . --template react-ts)",
+      "Bash(npx --yes create-vite@latest temp-init --template react-ts)",
+      "Bash(cp -r temp-init/* .)",
+      "Bash(cp temp-init/.gitignore .)",
+      "Bash(rm -rf temp-init)",
+      "Bash(npm install:*)"
+    ]
+  }
+}

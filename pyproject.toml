@@ -1,0 +1,41 @@
+[project]
+name = "agent-live2d-backend"
+version = "0.1.0"
+description = "Local-first FastAPI backend for the Agent Live2D desktop companion app"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.115.0,<1.0.0",
+  "uvicorn[standard]>=0.34.0,<1.0.0",
+  "pydantic>=2.11.0,<3.0.0",
+  "pydantic-settings>=2.8.0,<3.0.0",
+  "sqlalchemy>=2.0.40,<3.0.0",
+  "aiosqlite>=0.21.0,<1.0.0",
+  "orjson>=3.10.0,<4.0.0",
+  "httpx>=0.28.0,<1.0.0",
+  "langgraph>=0.3.0,<1.0.0",
+  "langchain-core>=0.3.0,<1.0.0",
+  "sse-starlette>=2.1.0,<3.0.0",
+  "tenacity>=9.0.0,<10.0.0",
+  "python-dotenv>=1.0.1,<2.0.0",
+  "qdrant-client>=1.14.0,<2.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.3.0,<9.0.0",
+  "pytest-asyncio>=0.26.0,<1.0.0",
+  "pytest-cov>=6.1.0,<7.0.0",
+]
+
+[build-system]
+requires = ["setuptools>=69.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
