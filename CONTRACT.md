@@ -1,6 +1,8 @@
 # Agent Live2D 前后端接口契约
 
-本文档定义当前仓库前后端对接时使用的核心后端接口契约。统一前缀为 `/api`，统一响应格式如下：
+本文档定义当前仓库前后端联调时使用的核心后端接口契约。
+
+统一前缀为 `/api`，统一响应结构如下：
 
 ```json
 {
@@ -225,7 +227,7 @@ data: {"messageId":"uuid","content":"你好，我在。"}
   "longTermMemoryEnabled": true,
   "live2dModel": "haru.model3.json",
   "defaultLayoutMode": "companion",
-  "systemPromptTemplate": "你是 {{persona_name }}，请始终以她的人设说话。"
+  "systemPromptTemplate": "你是 {{persona_name}}，请始终以她的人设说话。"
 }
 ```
 
@@ -268,7 +270,7 @@ data: {"messageId":"uuid","content":"你好，我在。"}
 
 ## 6. Skills
 
-字段：
+### 字段
 
 ```json
 {
@@ -295,7 +297,7 @@ data: {"messageId":"uuid","content":"你好，我在。"}
 
 ## 7. MCP Servers
 
-字段：
+### 字段
 
 ```json
 {
@@ -382,3 +384,24 @@ data: {"messageId":"uuid","content":"你好，我在。"}
 }
 ```
 
+## 11. Message Cleanup
+
+### `POST /api/conversations/{conversation_id}/messages/dedupe`
+
+Use this endpoint to remove obvious duplicate turns inside one conversation history.
+
+Response example:
+
+```json
+{
+  "success": true,
+  "data": {
+    "conversationId": "uuid",
+    "totalBefore": 24,
+    "totalAfter": 20,
+    "deletedCount": 4,
+    "deletedTurnCount": 2,
+    "deletedMessageIds": ["uuid-1", "uuid-2", "uuid-3", "uuid-4"]
+  }
+}
+```

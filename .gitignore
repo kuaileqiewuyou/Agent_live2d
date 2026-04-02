@@ -41,5 +41,10 @@ __pycache__/
 *.pyd
 *.egg-info/
 
+# Playwright
+playwright-report/
+test-results/
+blob-report/
+
 # Local data
 data/

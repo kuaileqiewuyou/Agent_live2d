@@ -1,27 +1,26 @@
 import {
-  Globe,
-  Code,
-  Image,
-  BookOpen,
-  Languages,
   BarChart3,
+  BookOpen,
+  Code,
+  Globe,
+  Image,
+  Languages,
   Sparkles,
   type LucideIcon,
 } from 'lucide-react'
 import type { Skill } from '@/types'
 import { cn } from '@/utils'
+import { Badge } from '@/components/ui/badge'
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogHeader,
   DialogTitle,
-  DialogDescription,
 } from '@/components/ui/dialog'
-import { Badge } from '@/components/ui/badge'
-import { Switch } from '@/components/ui/switch'
 import { Label } from '@/components/ui/label'
 import { Separator } from '@/components/ui/separator'
-import { TERMS } from '@/constants'
+import { Switch } from '@/components/ui/switch'
 
 const ICON_MAP: Record<string, LucideIcon> = {
   'mdi:web': Globe,
@@ -59,7 +58,9 @@ export function SkillDetailDialog({
   onOpenChange,
   onToggle,
 }: SkillDetailDialogProps) {
-  if (!skill) return null
+  if (!skill) {
+    return null
+  }
 
   const iconKey = skill.icon || ''
   const IconComponent = ICON_MAP[iconKey] || Sparkles
@@ -72,15 +73,15 @@ export function SkillDetailDialog({
           <div className="flex items-center gap-3">
             <div
               className={cn(
-                'flex items-center justify-center w-12 h-12 rounded-xl',
+                'flex h-12 w-12 items-center justify-center rounded-xl',
                 iconColor,
               )}
             >
-              <IconComponent className="w-6 h-6" />
+              <IconComponent className="h-6 w-6" />
             </div>
             <div>
               <DialogTitle className="text-base">{skill.name}</DialogTitle>
-              <DialogDescription className="text-xs mt-0.5">
+              <DialogDescription className="mt-0.5 text-xs">
                 v{skill.version} · {skill.author}
               </DialogDescription>
             </div>
@@ -88,9 +89,8 @@ export function SkillDetailDialog({
         </DialogHeader>
 
         <div className="space-y-4">
-          {/* Description */}
           <div>
-            <Label className="text-xs text-(--color-muted-foreground) mb-1.5 block">
+            <Label className="mb-1.5 block text-xs text-(--color-muted-foreground)">
               描述
             </Label>
             <p className="text-sm leading-relaxed">{skill.description}</p>
@@ -98,9 +98,8 @@ export function SkillDetailDialog({
 
           <Separator />
 
-          {/* Summary */}
           <div>
-            <Label className="text-xs text-(--color-muted-foreground) mb-1.5 block">
+            <Label className="mb-1.5 block text-xs text-(--color-muted-foreground)">
               说明
             </Label>
             <p className="text-sm leading-relaxed">{skill.summary}</p>
@@ -108,13 +107,12 @@ export function SkillDetailDialog({
 
           <Separator />
 
-          {/* Tags */}
           <div>
-            <Label className="text-xs text-(--color-muted-foreground) mb-1.5 block">
+            <Label className="mb-1.5 block text-xs text-(--color-muted-foreground)">
               标签
             </Label>
             <div className="flex flex-wrap gap-1.5">
-              {skill.tags.map((tag) => (
+              {skill.tags.map(tag => (
                 <Badge key={tag} variant="secondary" className="text-xs">
                   {tag}
                 </Badge>
@@ -124,15 +122,14 @@ export function SkillDetailDialog({
 
           <Separator />
 
-          {/* Scope */}
           <div>
-            <Label className="text-xs text-(--color-muted-foreground) mb-1.5 block">
+            <Label className="mb-1.5 block text-xs text-(--color-muted-foreground)">
               适用范围
             </Label>
             <div className="flex flex-wrap gap-1.5">
-              {skill.scope.map((s) => (
-                <Badge key={s} variant="outline" className="text-xs">
-                  {SCOPE_LABELS[s] || s}
+              {skill.scope.map(scope => (
+                <Badge key={scope} variant="outline" className="text-xs">
+                  {SCOPE_LABELS[scope] || scope}
                 </Badge>
               ))}
             </div>
@@ -140,17 +137,16 @@ export function SkillDetailDialog({
 
           <Separator />
 
-          {/* Enable/Disable Toggle */}
           <div className="flex items-center justify-between">
             <div>
-              <Label className="text-sm font-medium">启用 {TERMS.skill}</Label>
+              <Label className="text-sm font-medium">启用 Skill</Label>
               <p className="text-xs text-(--color-muted-foreground)">
-                {skill.enabled ? `该 ${TERMS.skill} 已启用` : `该 ${TERMS.skill} 已停用`}
+                {skill.enabled ? '该 Skill 当前已启用。' : '该 Skill 当前已停用。'}
               </p>
             </div>
             <Switch
               checked={skill.enabled}
-              onCheckedChange={(checked) => onToggle(skill.id, checked)}
+              onCheckedChange={checked => onToggle(skill.id, checked)}
             />
           </div>
         </div>

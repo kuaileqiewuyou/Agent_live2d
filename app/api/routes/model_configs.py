@@ -4,6 +4,7 @@ from app.core.responses import api_response
 from app.db.session import get_db_session
 from app.schemas.common import ListData
 from app.schemas.model_config import (
+    ModelConnectionTestResult,
     ModelConfigCreate,
     ModelConfigRead,
     ModelConfigUpdate,
@@ -54,5 +55,4 @@ async def delete_config(config_id: str, service: ModelConfigService = Depends(_s
 @router.post("/{config_id}/test")
 async def test_config(config_id: str, service: ModelConfigService = Depends(_service)):
     result = await service.test_connection(config_id)
-    return api_response(result)
-
+    return api_response(ModelConnectionTestResult.model_validate(result).model_dump(by_alias=True))

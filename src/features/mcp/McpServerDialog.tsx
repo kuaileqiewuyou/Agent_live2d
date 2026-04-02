@@ -1,3 +1,4 @@
+import { useEffect } from 'react'
 import { useForm } from 'react-hook-form'
 import { z } from 'zod'
 import { zodResolver } from '@hookform/resolvers/zod'
@@ -6,16 +7,14 @@ import { MCP_TRANSPORT_LABELS } from '@/constants'
 import {
   Dialog,
   DialogContent,
-  DialogHeader,
-  DialogTitle,
   DialogDescription,
   DialogFooter,
+  DialogHeader,
+  DialogTitle,
 } from '@/components/ui/dialog'
-import { Input } from '@/components/ui/input'
-import { Textarea } from '@/components/ui/textarea'
-import { Label } from '@/components/ui/label'
 import { Button } from '@/components/ui/button'
-import { Switch } from '@/components/ui/switch'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
 import {
   Select,
   SelectContent,
@@ -23,6 +22,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
+import { Switch } from '@/components/ui/switch'
+import { Textarea } from '@/components/ui/textarea'
 
 const mcpServerSchema = z.object({
   name: z.string().min(1, '请输入服务名称'),
@@ -37,7 +38,15 @@ type McpServerFormValues = z.infer<typeof mcpServerSchema>
 interface McpServerDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
-  onSubmit: (data: McpServerFormValues) => void
+  onSubmit: (data: McpServerFormValues) => Promise<void>
+}
+
+const DEFAULT_VALUES: McpServerFormValues = {
+  name: '',
+  description: '',
+  transportType: 'stdio',
+  address: '',
+  enabled: true,
 }
 
 export function McpServerDialog({
@@ -51,29 +60,28 @@ export function McpServerDialog({
     setValue,
     watch,
     reset,
-    formState: { errors },
-  } = useForm({
+    formState: { errors, isSubmitting },
+  } = useForm<McpServerFormValues>({
     resolver: zodResolver(mcpServerSchema) as any,
-    defaultValues: {
-      name: '',
-      description: '',
-      transportType: 'stdio',
-      address: '',
-      enabled: true,
-    },
+    defaultValues: DEFAULT_VALUES,
   })
 
   const transportType = watch('transportType')
   const enabled = watch('enabled')
 
-  function handleFormSubmit(data: McpServerFormValues) {
-    onSubmit(data)
-    reset()
-    onOpenChange(false)
+  useEffect(() => {
+    if (open) {
+      reset(DEFAULT_VALUES)
+    }
+  }, [open, reset])
+
+  async function handleFormSubmit(data: McpServerFormValues) {
+    await onSubmit(data)
+    reset(DEFAULT_VALUES)
   }
 
   function handleCancel() {
-    reset()
+    reset(DEFAULT_VALUES)
     onOpenChange(false)
   }
 
@@ -83,7 +91,7 @@ export function McpServerDialog({
         <DialogHeader>
           <DialogTitle>添加 MCP 服务</DialogTitle>
           <DialogDescription>
-            配置新的 MCP 服务器连接
+            配置一个新的 MCP 服务端连接。
           </DialogDescription>
         </DialogHeader>
 
@@ -91,14 +99,13 @@ export function McpServerDialog({
           onSubmit={handleSubmit(handleFormSubmit as any)}
           className="space-y-4"
         >
-          {/* Name */}
           <div className="space-y-2">
             <Label htmlFor="name" className="text-sm">
               服务名称 <span className="text-(--color-destructive)">*</span>
             </Label>
             <Input
               id="name"
-              placeholder="例如: 本地文件系统"
+              placeholder="例如：本地文件系统"
               {...register('name')}
             />
             {errors.name && (
@@ -108,27 +115,23 @@ export function McpServerDialog({
             )}
           </div>
 
-          {/* Description */}
           <div className="space-y-2">
             <Label htmlFor="description" className="text-sm">
               描述
             </Label>
             <Textarea
               id="description"
-              placeholder="简要描述此服务的功能..."
+              placeholder="简要说明这个服务的用途。"
               rows={3}
               {...register('description')}
             />
           </div>
 
-          {/* Transport Type */}
           <div className="space-y-2">
             <Label className="text-sm">传输方式</Label>
             <Select
               value={transportType}
-              onValueChange={(value: MCPTransportType) =>
-                setValue('transportType', value)
-              }
+              onValueChange={(value: MCPTransportType) => setValue('transportType', value)}
             >
               <SelectTrigger>
                 <SelectValue />
@@ -144,20 +147,17 @@ export function McpServerDialog({
             </Select>
           </div>
 
-          {/* Address */}
           <div className="space-y-2">
             <Label htmlFor="address" className="text-sm">
-              {transportType === 'stdio'
-                ? '启动命令'
-                : '服务地址'}{' '}
+              {transportType === 'stdio' ? '启动命令' : '服务地址'}{' '}
               <span className="text-(--color-destructive)">*</span>
             </Label>
             <Input
               id="address"
               placeholder={
                 transportType === 'stdio'
-                  ? '例如: /usr/local/bin/mcp-server'
-                  : '例如: https://mcp.example.com/api'
+                  ? '例如：python -m your_mcp_server'
+                  : '例如：https://mcp.example.com/api'
               }
               className="font-mono text-sm"
               {...register('address')}
@@ -169,17 +169,16 @@ export function McpServerDialog({
             )}
           </div>
 
-          {/* Enabled */}
           <div className="flex items-center justify-between">
             <div>
-              <Label className="text-sm">启用</Label>
+              <Label className="text-sm">启用服务</Label>
               <p className="text-xs text-(--color-muted-foreground)">
-                添加后立即启用此服务
+                创建后立即启用这个服务。
               </p>
             </div>
             <Switch
               checked={enabled}
-              onCheckedChange={(checked) => setValue('enabled', checked)}
+              onCheckedChange={checked => setValue('enabled', checked)}
             />
           </div>
 
@@ -191,7 +190,9 @@ export function McpServerDialog({
             >
               取消
             </Button>
-            <Button type="submit">添加服务</Button>
+            <Button type="submit" disabled={isSubmitting}>
+              {isSubmitting ? '创建中...' : '添加服务'}
+            </Button>
           </DialogFooter>
         </form>
       </DialogContent>

@@ -1,24 +1,66 @@
+import { apiRequest, isMockMode } from '@/api'
 import type { AppSettings } from '@/types'
 import { DEFAULT_SETTINGS } from '@/constants'
 
 const STORAGE_KEY = 'agent-live2d-settings'
 let settings: AppSettings = { ...DEFAULT_SETTINGS }
 
-async function getSettings(): Promise<AppSettings> {
-  const stored = localStorage.getItem(STORAGE_KEY)
-  if (stored) {
-    settings = { ...DEFAULT_SETTINGS, ...JSON.parse(stored) }
+function readCachedSettings(): AppSettings | null {
+  if (typeof window === 'undefined') return null
+
+  try {
+    const stored = localStorage.getItem(STORAGE_KEY)
+    if (!stored) return null
+
+    return { ...DEFAULT_SETTINGS, ...JSON.parse(stored) }
   }
+  catch {
+    return null
+  }
+}
+
+function writeCachedSettings(nextSettings: AppSettings) {
+  if (typeof window === 'undefined') return
+
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(nextSettings))
+}
+
+function setSettingsCache(nextSettings: AppSettings) {
+  settings = { ...DEFAULT_SETTINGS, ...nextSettings }
+  writeCachedSettings(settings)
+}
+
+async function getSettings(): Promise<AppSettings> {
+  const cachedSettings = readCachedSettings()
+  if (cachedSettings) {
+    settings = cachedSettings
+  }
+
+  if (isMockMode()) {
+    return { ...settings }
+  }
+
+  const res = await apiRequest<AppSettings>('/api/settings')
+  setSettingsCache({ ...DEFAULT_SETTINGS, ...res.data })
   return { ...settings }
 }
 
 async function updateSettings(data: Partial<AppSettings>): Promise<AppSettings> {
-  settings = { ...settings, ...data }
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(settings))
+  if (isMockMode()) {
+    setSettingsCache({ ...settings, ...data })
+    return { ...settings }
+  }
+
+  const res = await apiRequest<AppSettings>('/api/settings', {
+    method: 'PATCH',
+    body: JSON.stringify(data),
+  })
+  setSettingsCache({ ...DEFAULT_SETTINGS, ...res.data })
   return { ...settings }
 }
 
 export const settingsService = {
   getSettings,
   updateSettings,
+  getCachedSettings: readCachedSettings,
 }
