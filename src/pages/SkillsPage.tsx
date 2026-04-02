@@ -86,14 +86,14 @@ export function SkillsPage() {
               <Sparkles className="w-5 h-5 text-(--color-primary)" />
             </div>
             <div>
-              <h1 className="text-xl font-bold">技能中心</h1>
+              <h1 className="text-xl font-bold">Skill 中心</h1>
               <p className="text-xs text-(--color-muted-foreground)">
-                管理和配置 AI 助手的扩展技能
+                管理和配置 AI 助手的扩展 Skill
               </p>
             </div>
           </div>
           <Badge variant="secondary" className="text-xs px-3 py-1">
-            已启用 {enabledCount} 个技能
+            已启用 {enabledCount} 个 Skill
           </Badge>
         </div>
 
@@ -101,7 +101,7 @@ export function SkillsPage() {
         <div className="relative">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-(--color-muted-foreground)" />
           <Input
-            placeholder="搜索技能名称、描述或标签..."
+            placeholder="搜索 Skill 名称、描述或标签..."
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             className="pl-9"
@@ -160,7 +160,7 @@ export function SkillsPage() {
         {filteredSkills.length === 0 && (
           <div className="flex flex-col items-center justify-center py-16 text-(--color-muted-foreground)">
             <Sparkles className="w-10 h-10 mb-3 opacity-30" />
-            <p className="text-sm">没有找到匹配的技能</p>
+            <p className="text-sm">没有找到匹配的 Skill</p>
           </div>
         )}
       </ScrollArea>
