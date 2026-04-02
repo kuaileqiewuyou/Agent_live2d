@@ -142,9 +142,9 @@ export function SkillDetailDialog({
           {/* Enable/Disable Toggle */}
           <div className="flex items-center justify-between">
             <div>
-              <Label className="text-sm font-medium">启用技能</Label>
+              <Label className="text-sm font-medium">启用 Skill</Label>
               <p className="text-xs text-(--color-muted-foreground)">
-                {skill.enabled ? '该技能已启用' : '该技能已停用'}
+                {skill.enabled ? '该 Skill 已启用' : '该 Skill 已停用'}
               </p>
             </div>
             <Switch

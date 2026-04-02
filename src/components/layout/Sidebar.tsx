@@ -28,7 +28,7 @@ const NAV_ITEMS = [
   { to: '/chat', icon: <MessageSquare className="h-5 w-5" />, label: '聊天' },
   { to: '/personas', icon: <UserCircle className="h-5 w-5" />, label: '人设' },
   { to: '/model-config', icon: <Settings2 className="h-5 w-5" />, label: '模型配置' },
-  { to: '/skills', icon: <Zap className="h-5 w-5" />, label: '技能' },
+  { to: '/skills', icon: <Zap className="h-5 w-5" />, label: 'Skills' },
   { to: '/mcp', icon: <Server className="h-5 w-5" />, label: 'MCP 服务' },
   { to: '/settings', icon: <Settings className="h-5 w-5" />, label: '设置' },
 ]

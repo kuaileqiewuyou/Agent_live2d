@@ -91,7 +91,7 @@ export function ChatInput({
         {skillCount > 0 && (
           <span className="flex items-center gap-1">
             <Zap className="h-3 w-3" />
-            {skillCount} 技能
+            {skillCount} Skill
           </span>
         )}
         {mcpCount > 0 && (
