@@ -5,6 +5,7 @@ on:
     paths:
       - "Dockerfile"
       - "docker-compose.yml"
+      - "scripts/local-experience.mjs"
       - "src-tauri/**"
       - "src/**"
       - "package.json"
@@ -42,6 +43,7 @@ jobs:
             docker:
               - 'Dockerfile'
               - 'docker-compose.yml'
+              - 'scripts/local-experience.mjs'
               - 'pyproject.toml'
               - '.env.example'
 
@@ -75,30 +77,26 @@ jobs:
     timeout-minutes: 30
     needs: detect_changes
     if: ${{ needs.detect_changes.outputs.docker == 'true' }}
+    env:
+      APP_HOST_PORT: "18001"
+      DATABASE_URL: "sqlite+aiosqlite:///./data/desktop_docker_smoke.db"
     steps:
       - name: Checkout
         uses: actions/checkout@v6
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "20"
+
       - name: Compose config check
         run: docker compose config
 
-      - name: Start docker stack
-        run: docker compose up --build -d qdrant app
+      - name: Start local docker flow
+        run: npm run local:up
 
-      - name: Wait for backend health
-        run: |
-          for i in $(seq 1 40); do
-            if curl -fsS http://127.0.0.1:8001/api/health > /tmp/health.json; then
-              echo "backend-health-ok"
-              cat /tmp/health.json
-              exit 0
-            fi
-            sleep 3
-          done
-          echo "backend health check timeout" >&2
-          docker compose ps
-          docker compose logs app qdrant
-          exit 1
+      - name: Check backend health through local flow
+        run: npm run local:check
 
       - name: Dump compose logs on failure
         if: failure()
@@ -116,7 +114,7 @@ jobs:
 
       - name: Tear down
         if: always()
-        run: docker compose down -v
+        run: npm run local:down
 
   no_relevant_changes:
     runs-on: ubuntu-latest
