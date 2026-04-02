@@ -9,4 +9,12 @@ test.describe('Skill terminology', () => {
 
     await expect(page.locator('body')).not.toContainText('技能')
   })
+
+  test('Sidebar navigation keeps Skills label in English', async ({ page }) => {
+    await page.goto('/skills')
+
+    const sidebar = page.locator('aside')
+    await expect(sidebar.getByRole('link', { name: 'Skills' })).toBeVisible()
+    await expect(sidebar).not.toContainText('技能')
+  })
 })
