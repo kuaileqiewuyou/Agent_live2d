@@ -18,3 +18,13 @@ test.describe('Skill terminology', () => {
     await expect(sidebar).not.toContainText('技能')
   })
 })
+
+test.describe('Tool usage terminology', () => {
+  test('Tool message bubble keeps tool identifier and avoids Chinese fallback title', async ({ page }) => {
+    await page.goto('/chat/conv-3')
+
+    const toolBubble = page.locator('button:has-text("web_search")').first()
+    await expect(toolBubble).toBeVisible()
+    await expect(toolBubble).not.toContainText('工具调用')
+  })
+})
