@@ -106,7 +106,7 @@ export function ModelConfigCard({
           {config.toolCallSupported && (
             <Badge variant="secondary" className="gap-1 text-xs">
               <Wrench className="h-3 w-3" />
-              工具调用
+              Tool Call
             </Badge>
           )}
         </div>

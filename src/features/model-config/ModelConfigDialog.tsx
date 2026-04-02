@@ -251,7 +251,7 @@ export function ModelConfigDialog({
             {/* 支持工具调用 */}
             <div className="flex items-center justify-between">
               <Label htmlFor="toolCallSupported" className="cursor-pointer">
-                支持工具调用
+                Enable Tool Call
               </Label>
               <Controller
                 name="toolCallSupported"
