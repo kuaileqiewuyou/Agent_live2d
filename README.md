@@ -110,6 +110,65 @@ pyproject.toml
 
 ## 本地开发启动方式
 
+## 一键体验（推荐）
+
+如果你想最短路径体验“Docker 后端 + 前端/桌面端”，可以直接使用下面的命令。
+
+### 1. 仅拉起后端依赖（Docker）
+
+```bash
+npm run local:up
+```
+
+脚本会自动执行：
+
+- `docker compose up --build -d qdrant app`
+- 后端健康检查：`http://127.0.0.1:8001/api/health`
+
+停止服务：
+
+```bash
+npm run local:down
+```
+
+单独健康检查：
+
+```bash
+npm run local:check
+```
+
+### 2. 一键跑 Web 开发体验（推荐日常开发）
+
+```bash
+npm run local:web
+```
+
+这个命令会：
+
+1. 自动拉起 `qdrant + app`
+2. 自动等待后端健康检查通过
+3. 自动注入 `VITE_USE_MOCK=false` 与 `VITE_API_BASE_URL=http://127.0.0.1:8001`
+4. 启动前端开发服务器（Vite）
+5. 退出时自动 `docker compose down`
+
+### 3. 一键跑桌面端体验（Tauri）
+
+```bash
+npm run local:desktop
+```
+
+这个命令会：
+
+1. 自动拉起 `qdrant + app`
+2. 自动等待后端健康检查通过
+3. 自动注入真实后端环境变量（关闭 mock）
+4. 启动 `tauri dev`
+5. 退出时自动 `docker compose down`
+
+> 说明：`local:desktop` 需要本机已安装 Tauri/Rust 开发环境。
+
+---
+
 ### 1. 安装 Python 依赖
 
 ```bash
