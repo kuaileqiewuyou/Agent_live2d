@@ -84,13 +84,9 @@ async function waitForHealth(url, retries = 40, intervalMs = 3000) {
   let lastError = null
   for (let attempt = 1; attempt <= retries; attempt += 1) {
     try {
-      const response = await fetch(url, { method: 'GET' })
-      if (response.ok) {
-        const body = await response.text()
-        console.log(`[health] ok on attempt ${attempt}: ${body}`)
-        return
-      }
-      lastError = new Error(`status=${response.status}`)
+      await run('curl', ['-fsS', url], { quiet: true })
+      console.log(`[health] ok on attempt ${attempt}`)
+      return
     }
     catch (error) {
       lastError = error
