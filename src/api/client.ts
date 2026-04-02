@@ -9,9 +9,9 @@ export interface ApiResponse<T> {
 }
 
 /**
- * 缁熶竴 API 璇锋眰灏佽
- * - 鍙戦€佹椂鑷姩灏?body 浠?camelCase 杞负 snake_case
- * - 鎺ユ敹鏃惰嚜鍔ㄥ皢鍝嶅簲浠?snake_case 杞负 camelCase
+ * Unified API request helper.
+ * - Convert request JSON body from camelCase to snake_case.
+ * - Convert response payload from snake_case to camelCase.
  */
 export async function apiRequest<T>(
   endpoint: string,
@@ -23,7 +23,6 @@ export async function apiRequest<T>(
 
   const baseUrl = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
 
-  // 鑷姩杞崲璇锋眰浣撲负 snake_case
   let processedOptions = options
   if (options?.body && typeof options.body === 'string') {
     try {
@@ -32,8 +31,10 @@ export async function apiRequest<T>(
         ...options,
         body: JSON.stringify(keysToSnake(parsed)),
       }
-    } catch {
-      // 闈?JSON body锛屼繚鎸佸師鏍?    }
+    }
+    catch {
+      // Ignore invalid JSON body and keep original payload.
+    }
   }
 
   const response = await fetch(`${baseUrl}${endpoint}`, {
@@ -45,7 +46,6 @@ export async function apiRequest<T>(
     throw new Error(`API Error: ${response.status} ${response.statusText}`)
   }
 
-  // 鑷姩杞崲鍝嶅簲涓?camelCase
   const raw = await response.json()
   return keysToCamel<ApiResponse<T>>(raw)
 }
