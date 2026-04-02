@@ -3,7 +3,7 @@ import { useForm, Controller } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import type { ModelConfig, ProviderType } from '@/types'
-import { PROVIDER_LABELS, PROVIDER_DEFAULT_URLS } from '@/constants'
+import { PROVIDER_LABELS, PROVIDER_DEFAULT_URLS, TERMS } from '@/constants'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -251,7 +251,7 @@ export function ModelConfigDialog({
             {/* 支持工具调用 */}
             <div className="flex items-center justify-between">
               <Label htmlFor="toolCallSupported" className="cursor-pointer">
-                Enable Tool Call
+                {TERMS.enableToolCall}
               </Label>
               <Controller
                 name="toolCallSupported"

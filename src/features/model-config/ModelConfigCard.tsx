@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import type { ModelConfig, ProviderType } from '@/types'
-import { PROVIDER_LABELS } from '@/constants'
+import { PROVIDER_LABELS, TERMS } from '@/constants'
 import { modelService } from '@/services'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -106,7 +106,7 @@ export function ModelConfigCard({
           {config.toolCallSupported && (
             <Badge variant="secondary" className="gap-1 text-xs">
               <Wrench className="h-3 w-3" />
-              Tool Call
+              {TERMS.toolCall}
             </Badge>
           )}
         </div>

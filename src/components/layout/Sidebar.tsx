@@ -12,7 +12,7 @@ import {
 } from 'lucide-react'
 import { cn } from '@/utils'
 import { useAppStore, useUIStore } from '@/stores'
-import { APP_NAME } from '@/constants'
+import { APP_NAME, TERMS } from '@/constants'
 import { Button } from '@/components/ui/button'
 import { Separator } from '@/components/ui/separator'
 import {
@@ -28,7 +28,7 @@ const NAV_ITEMS = [
   { to: '/chat', icon: <MessageSquare className="h-5 w-5" />, label: '聊天' },
   { to: '/personas', icon: <UserCircle className="h-5 w-5" />, label: '人设' },
   { to: '/model-config', icon: <Settings2 className="h-5 w-5" />, label: '模型配置' },
-  { to: '/skills', icon: <Zap className="h-5 w-5" />, label: 'Skills' },
+  { to: '/skills', icon: <Zap className="h-5 w-5" />, label: TERMS.skills },
   { to: '/mcp', icon: <Server className="h-5 w-5" />, label: 'MCP 服务' },
   { to: '/settings', icon: <Settings className="h-5 w-5" />, label: '设置' },
 ]

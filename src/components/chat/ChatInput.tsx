@@ -18,6 +18,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from '@/components/ui/tooltip'
+import { TERMS } from '@/constants'
 
 interface ChatInputProps {
   onSend: (content: string) => void
@@ -91,7 +92,7 @@ export function ChatInput({
         {skillCount > 0 && (
           <span className="flex items-center gap-1">
             <Zap className="h-3 w-3" />
-            {skillCount} Skill
+            {skillCount} {TERMS.skill}
           </span>
         )}
         {mcpCount > 0 && (
