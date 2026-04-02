@@ -1,0 +1,86 @@
+name: Desktop + Docker Smoke
+
+on:
+  pull_request:
+    paths:
+      - "Dockerfile"
+      - "docker-compose.yml"
+      - "src-tauri/**"
+      - "package.json"
+      - "pyproject.toml"
+      - ".github/workflows/desktop-docker-smoke.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: desktop-docker-smoke-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  desktop_web_build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Validate Tauri config JSON
+        run: node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('src-tauri/tauri.conf.json','utf8')); console.log('tauri-config-ok')"
+
+      - name: Build frontend dist (for Tauri)
+        run: npm run build
+
+  docker_backend_smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Compose config check
+        run: docker compose config
+
+      - name: Start docker stack
+        run: docker compose up --build -d qdrant app
+
+      - name: Wait for backend health
+        run: |
+          for i in $(seq 1 40); do
+            if curl -fsS http://127.0.0.1:8001/api/health > /tmp/health.json; then
+              echo "backend-health-ok"
+              cat /tmp/health.json
+              exit 0
+            fi
+            sleep 3
+          done
+          echo "backend health check timeout" >&2
+          docker compose ps
+          docker compose logs app qdrant
+          exit 1
+
+      - name: Dump compose logs on failure
+        if: failure()
+        run: |
+          docker compose ps
+          docker compose logs app qdrant > compose-failure.log
+
+      - name: Upload docker logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-compose-failure-logs
+          path: compose-failure.log
+          if-no-files-found: ignore
+
+      - name: Tear down
+        if: always()
+        run: docker compose down -v

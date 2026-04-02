@@ -1,0 +1,135 @@
+name: Release Ticket
+description: 发布工单（用于版本发布前的计划、范围、风险、回滚与验收）
+title: "[Release] vX.Y.Z - YYYY-MM-DD"
+labels:
+  - release
+body:
+  - type: markdown
+    attributes:
+      value: |
+        请在发布前完整填写本工单。建议由发布责任人创建，并在发布结束后补充结果。
+
+  - type: input
+    id: version
+    attributes:
+      label: 发布版本
+      description: 例如 v0.1.0 / v0.2.3-hotfix.1
+      placeholder: v0.1.0
+    validations:
+      required: true
+
+  - type: input
+    id: target_branch
+    attributes:
+      label: 目标分支
+      description: 通常为 main
+      placeholder: main
+    validations:
+      required: true
+
+  - type: input
+    id: release_window
+    attributes:
+      label: 发布时间窗口
+      description: 使用北京时间，例如 2026-04-03 20:00-21:00
+      placeholder: 2026-04-03 20:00-21:00 (Asia/Shanghai)
+    validations:
+      required: true
+
+  - type: input
+    id: release_owner
+    attributes:
+      label: 发布责任人
+      description: 本次发布的主负责人（GitHub 用户名或姓名）
+      placeholder: "@kuaileqiewuyou"
+    validations:
+      required: true
+
+  - type: input
+    id: rollback_drill_time
+    attributes:
+      label: 计划回滚演练时间
+      description: 发布前安排的回滚演练时间（北京时间）
+      placeholder: 2026-04-03 18:30 (Asia/Shanghai)
+    validations:
+      required: true
+
+  - type: textarea
+    id: scope
+    attributes:
+      label: 发布范围
+      description: 列出本次发布包含的功能点、修复项、配置变更
+      placeholder: |
+        - Tool panel typed params 校验
+        - manualToolRequests 参数校验
+        - Docker smoke 稳定性修复
+    validations:
+      required: true
+
+  - type: textarea
+    id: risk
+    attributes:
+      label: 风险评估
+      description: 列出高风险模块、潜在回归点、用户影响面
+      placeholder: |
+        - 聊天发送链路（stream/fallback）
+        - 文案与本地化展示
+        - Docker 启动稳定性
+    validations:
+      required: true
+
+  - type: textarea
+    id: rollback
+    attributes:
+      label: 回滚方案
+      description: 出现故障时如何快速回滚到上一稳定版本
+      placeholder: |
+        1. 回退到上一稳定 commit/tag
+        2. 重新构建镜像并执行 docker compose up -d
+        3. 验证 /api/health 与核心聊天链路
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: 发布前检查清单（必须完成）
+      description: 全部勾选后才允许进入发布
+      options:
+        - label: 后端测试通过（python -m pytest -q）
+          required: true
+        - label: 前端单测通过（npm run test:unit）
+          required: true
+        - label: 前端 E2E 通过（npm run test:e2e）
+          required: true
+        - label: 一键 smoke 通过（npm run smoke:release 或 --skip-e2e 并说明原因）
+          required: true
+        - label: Docker 健康检查通过（/api/health）
+          required: true
+        - label: 已确认本次变更无未评估的数据结构或接口破坏性修改
+          required: true
+
+  - type: textarea
+    id: release_notes
+    attributes:
+      label: 发布说明草稿
+      description: 面向团队/测试/前端的发布说明
+      placeholder: |
+        - 新增：
+        - 修复：
+        - 兼容性说明：
+        - 已知问题：
+    validations:
+      required: true
+
+  - type: textarea
+    id: post_release_result
+    attributes:
+      label: 发布后结果记录
+      description: 发布完成后补充实际结果、异常与处置
+      placeholder: |
+        发布状态：成功/失败
+        异常：无/有（说明）
+        处置：无/有（说明）
+    validations:
+      required: false
