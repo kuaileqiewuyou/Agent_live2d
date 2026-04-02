@@ -1,5 +1,5 @@
 {
-  "$schema": "https://raw.githubusercontent.com/niceful/tauri-v2-schemas/main/tauri.conf.json",
+  "$schema": "https://schema.tauri.app/config/2",
   "productName": "AI伙伴",
   "version": "0.1.0",
   "identifier": "com.agent-live2d.app",
@@ -10,7 +10,6 @@
     "beforeBuildCommand": "npm run build"
   },
   "app": {
-    "title": "AI 伙伴",
     "windows": [
       {
         "title": "AI 伙伴",

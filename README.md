@@ -167,6 +167,24 @@ npm run local:desktop
 
 > 说明：`local:desktop` 需要本机已安装 Tauri/Rust 开发环境。
 
+### 4. 桌面端前置依赖检查（Tauri Doctor）
+
+在运行 `tauri:dev` / `tauri:build` 前，建议先执行：
+
+```bash
+npm run desktop:doctor
+```
+
+当前会检查：
+
+- `cargo`（Rust 工具链）
+- `rustc`（Rust 编译器）
+- 本地 `node_modules/.bin/tauri`（`@tauri-apps/cli`）
+
+如果缺少 Rust，可按官方安装方式补齐：
+
+- Rust 安装：[https://www.rust-lang.org/tools/install](https://www.rust-lang.org/tools/install)
+
 ---
 
 ### 1. 安装 Python 依赖
