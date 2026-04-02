@@ -20,8 +20,16 @@ Env:
 `.trim()
 
 function run(command, args, options = {}) {
+  let resolvedCommand = command
+  let resolvedArgs = args
+
+  if (process.platform === 'win32' && command.toLowerCase().endsWith('.cmd')) {
+    resolvedCommand = 'cmd.exe'
+    resolvedArgs = ['/d', '/s', '/c', command, ...args]
+  }
+
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, {
+    const child = spawn(resolvedCommand, resolvedArgs, {
       stdio: 'inherit',
       ...options,
     })
@@ -32,18 +40,24 @@ function run(command, args, options = {}) {
         resolve()
         return
       }
-      reject(new Error(`${command} ${args.join(' ')} failed with exit code ${code}`))
+      reject(new Error(`${resolvedCommand} ${resolvedArgs.join(' ')} failed with exit code ${code}`))
     })
   })
 }
 
 function runInteractive(command, args, options = {}) {
-  const child = spawn(command, args, {
+  let resolvedCommand = command
+  let resolvedArgs = args
+
+  if (process.platform === 'win32' && command.toLowerCase().endsWith('.cmd')) {
+    resolvedCommand = 'cmd.exe'
+    resolvedArgs = ['/d', '/s', '/c', command, ...args]
+  }
+
+  return spawn(resolvedCommand, resolvedArgs, {
     stdio: 'inherit',
     ...options,
   })
-
-  return child
 }
 
 async function waitForHealth(url, retries, intervalMs) {
