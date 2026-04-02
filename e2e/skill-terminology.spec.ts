@@ -28,3 +28,12 @@ test.describe('Tool usage terminology', () => {
     await expect(toolBubble).not.toContainText('工具调用')
   })
 })
+
+test.describe('Model config terminology', () => {
+  test('Model config card keeps Tool Call wording and blocks Chinese fallback', async ({ page }) => {
+    await page.goto('/model-config')
+
+    await expect(page.getByText('Tool Call').first()).toBeVisible()
+    await expect(page.locator('main')).not.toContainText('工具调用')
+  })
+})
