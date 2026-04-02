@@ -20,18 +20,47 @@ Usage:
 `.trim()
 
 function run(command, args, options = {}) {
+  const quiet = options.quiet === true
+  const spawnOptions = { ...options }
+  delete spawnOptions.quiet
+
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
-      stdio: 'inherit',
+      stdio: quiet ? ['ignore', 'pipe', 'pipe'] : 'inherit',
       shell: true,
-      ...options,
+      ...spawnOptions,
     })
+
+    let stdoutBuffer = ''
+    let stderrBuffer = ''
+    if (quiet) {
+      child.stdout?.on('data', (chunk) => {
+        stdoutBuffer += String(chunk)
+        if (stdoutBuffer.length > 20000) {
+          stdoutBuffer = stdoutBuffer.slice(-20000)
+        }
+      })
+      child.stderr?.on('data', (chunk) => {
+        stderrBuffer += String(chunk)
+        if (stderrBuffer.length > 20000) {
+          stderrBuffer = stderrBuffer.slice(-20000)
+        }
+      })
+    }
 
     child.on('error', reject)
     child.on('exit', (code) => {
       if (code === 0) {
         resolve()
         return
+      }
+      if (quiet) {
+        if (stdoutBuffer.trim()) {
+          console.error(`[quiet-stdout] ${stdoutBuffer.trim()}`)
+        }
+        if (stderrBuffer.trim()) {
+          console.error(`[quiet-stderr] ${stderrBuffer.trim()}`)
+        }
       }
       reject(new Error(`${command} ${args.join(' ')} failed with exit code ${code}`))
     })
@@ -136,7 +165,7 @@ async function main() {
     }
 
     console.log('\n[4/6] Starting Docker services (app + qdrant)')
-    await run('docker', ['compose', 'up', '--build', '-d', 'app', 'qdrant'], { env: dockerEnv })
+    await run('docker', ['compose', 'up', '--build', '-d', 'app', 'qdrant'], { env: dockerEnv, quiet: true })
     dockerStarted = true
 
     console.log('\n[5/6] Checking backend health')
@@ -149,7 +178,7 @@ async function main() {
     }
 
     console.log('\n[6/6] Stopping Docker services')
-    await run('docker', ['compose', 'down'], { env: dockerEnv })
+    await run('docker', ['compose', 'down'], { env: dockerEnv, quiet: true })
 
     console.log('\nRelease smoke completed successfully.')
   }
@@ -158,7 +187,7 @@ async function main() {
     if (dockerStarted) {
       try {
         console.log('\n[cleanup] docker compose down')
-        await run('docker', ['compose', 'down'], { env: dockerEnv })
+        await run('docker', ['compose', 'down'], { env: dockerEnv, quiet: true })
       }
       catch (cleanupError) {
         console.error('[cleanup] failed:', cleanupError instanceof Error ? cleanupError.message : String(cleanupError))
