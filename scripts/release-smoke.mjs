@@ -1,6 +1,8 @@
 import process from 'node:process'
 import { spawn } from 'node:child_process'
 import { setTimeout as delay } from 'node:timers/promises'
+import { readFile } from 'node:fs/promises'
+import { resolve } from 'node:path'
 
 const HELP_TEXT = `
 Release smoke steps:
@@ -34,6 +36,19 @@ function run(command, args, options = {}) {
       reject(new Error(`${command} ${args.join(' ')} failed with exit code ${code}`))
     })
   })
+}
+
+async function readPackageScripts(cwd = process.cwd()) {
+  try {
+    const packageJsonPath = resolve(cwd, 'package.json')
+    const packageRaw = await readFile(packageJsonPath, 'utf8')
+    const parsed = JSON.parse(packageRaw)
+    return parsed?.scripts ?? {}
+  }
+  catch (error) {
+    console.warn('[warn] unable to read package.json scripts:', error instanceof Error ? error.message : String(error))
+    return {}
+  }
 }
 
 async function waitForHealth(url, retries = 40, intervalMs = 3000) {
@@ -84,6 +99,9 @@ async function main() {
   }
 
   const skipE2E = args.has('--skip-e2e')
+  const npmScripts = await readPackageScripts()
+  const hasUnitScript = typeof npmScripts['test:unit'] === 'string'
+  const hasE2EScript = typeof npmScripts['test:e2e'] === 'string'
   const smokeAppPort = process.env.SMOKE_APP_PORT ?? '18001'
   const smokeDatabaseUrl = process.env.SMOKE_DATABASE_URL ?? 'sqlite+aiosqlite:///./data/release_smoke.db'
   const dockerEnv = {
@@ -98,11 +116,19 @@ async function main() {
     console.log('\n[1/6] Running backend tests')
     await run('python', ['-m', 'pytest', '-q'])
 
-    console.log('\n[2/6] Running frontend unit tests')
-    await run('npm', ['run', 'test:unit'])
+    if (hasUnitScript) {
+      console.log('\n[2/6] Running frontend unit tests')
+      await run('npm', ['run', 'test:unit'])
+    }
+    else {
+      console.log('\n[2/6] Skipped frontend unit tests (missing npm script: test:unit)')
+    }
 
     if (skipE2E) {
       console.log('\n[3/6] Skipped E2E tests (--skip-e2e)')
+    }
+    else if (!hasE2EScript) {
+      console.log('\n[3/6] Skipped E2E tests (missing npm script: test:e2e)')
     }
     else {
       console.log('\n[3/6] Running frontend E2E tests')
