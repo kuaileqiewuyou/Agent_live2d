@@ -1,0 +1,84 @@
+name: Release Process Guard
+
+on:
+  pull_request:
+    branches:
+      - main
+    types: [opened, edited, synchronize, reopened]
+
+concurrency:
+  group: release-process-guard-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  require_release_ticket:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Validate release ticket and checklist gates
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const body = (context.payload.pull_request.body || "").trim()
+            const releaseSectionPattern = /(^|\n)##\s*Linked\s+Release\s+Ticket/i
+            const issueRefPattern = /(^|\s)#\d+(\s|$)|https:\/\/github\.com\/[^\/]+\/[^\/]+\/issues\/\d+/i
+
+            const hasReleaseSection = releaseSectionPattern.test(body)
+            const hasIssueRef = issueRefPattern.test(body)
+
+            const checklistLines = body
+              .split(/\r?\n/)
+              .map(line => line.trim())
+              .map((line) => {
+                const match = line.match(/^- \[( |x|X)\]\s+(.+)$/)
+                if (!match) return null
+                return {
+                  checked: match[1].toLowerCase() === "x",
+                  label: match[2],
+                }
+              })
+              .filter(Boolean)
+
+            function findChecklistItem(pattern) {
+              return checklistLines.find(item => pattern.test(item.label))
+            }
+
+            const requiredChecklist = [
+              { pattern: /python\s+-m\s+pytest\s+-q/i, display: "python -m pytest -q" },
+              { pattern: /npm\s+run\s+test:unit/i, display: "npm run test:unit" },
+              { pattern: /npm\s+run\s+test:e2e/i, display: "npm run test:e2e" },
+              { pattern: /npm\s+run\s+smoke:release/i, display: "npm run smoke:release" },
+              { pattern: /docker\s+compose\s+up\s+--build\s+-d\s+app\s+qdrant/i, display: "docker compose up --build -d app qdrant" },
+              { pattern: /(api\/health|127\.0\.0\.1:8001\/api\/health|127\.0\.0\.1:18001\/api\/health)/i, display: "API health check" },
+            ]
+
+            const failedChecks = []
+
+            if (!hasReleaseSection || !hasIssueRef) {
+              failedChecks.push("Missing a valid Release Ticket reference in PR description.")
+            }
+
+            for (const item of requiredChecklist) {
+              const checklistItem = findChecklistItem(item.pattern)
+              if (!checklistItem) {
+                failedChecks.push(`Missing checklist item: ${item.display}`)
+                continue
+              }
+              if (!checklistItem.checked) {
+                failedChecks.push(`Unchecked checklist item: ${item.display}`)
+              }
+            }
+
+            if (failedChecks.length > 0) {
+              core.setFailed(
+                [
+                  "Release Process Guard failed:",
+                  ...failedChecks.map((entry, index) => `${index + 1}. ${entry}`),
+                  "",
+                  "Please update the PR description checklist and retry.",
+                ].join("\n"),
+              )
+              return
+            }
+
+            core.info("Release process guard checks passed.")
