@@ -19,11 +19,11 @@ jobs:
       e2e: ${{ steps.filter.outputs.e2e }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Detect changed areas
         id: filter
-        uses: dorny/paths-filter@v3
+        uses: dorny/paths-filter@v4
         with:
           filters: |
             backend:
@@ -47,11 +47,11 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup Python
         if: ${{ needs.detect_changes.outputs.backend == 'true' }}
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.11"
           cache: "pip"
@@ -68,7 +68,7 @@ jobs:
 
       - name: Setup Node.js
         if: ${{ needs.detect_changes.outputs.frontend == 'true' || needs.detect_changes.outputs.e2e == 'true' }}
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: "20"
           cache: "npm"
@@ -109,7 +109,7 @@ jobs:
 
       - name: Upload Playwright artifacts (on failure)
         if: ${{ failure() && needs.detect_changes.outputs.e2e == 'true' }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: playwright-artifacts
           path: |
