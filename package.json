@@ -8,6 +8,7 @@
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview",
+    "smoke:release": "node scripts/release-smoke.mjs",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build"
   },
