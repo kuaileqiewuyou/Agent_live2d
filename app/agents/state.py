@@ -1,4 +1,5 @@
-from typing import Any, TypedDict
+from typing import Annotated, Any, TypedDict
+import operator
 
 
 class AgentState(TypedDict, total=False):
@@ -11,11 +12,11 @@ class AgentState(TypedDict, total=False):
     long_term_memories: list[dict]
     enabled_skills: list[dict]
     enabled_mcp_servers: list[dict]
+    manual_tool_requests: list[dict]
     planner_output: dict
     tool_results: list[dict]
     final_response: str
     prompt_messages: list[dict]
-    stream_events: list[dict[str, Any]]
+    stream_events: Annotated[list[dict[str, Any]], operator.add]
     stop_requested: bool
     response_mode: str
-

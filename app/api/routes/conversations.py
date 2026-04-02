@@ -4,10 +4,10 @@ from fastapi import APIRouter, Depends, status
 from sse_starlette.sse import EventSourceResponse
 
 from app.core.responses import api_response
-from app.db.session import get_db_session
+from app.db.session import get_db_session, get_session_factory
 from app.schemas.common import ListData
 from app.schemas.conversation import ConversationCreate, ConversationRead, ConversationUpdate
-from app.schemas.message import MessageCreateRequest, MessageRead
+from app.schemas.message import MessageCreateRequest, MessageDedupeResult, MessageRead
 from app.services.conversation import ConversationService
 from app.services.message import MessageService
 
@@ -99,12 +99,18 @@ async def stream_message(
     payload: MessageCreateRequest,
     service: MessageService = Depends(_message_service),
 ):
+    request_payload = payload.model_dump()
+    await service.validate_manual_tool_requests(conversation_id, request_payload)
+    session_factory = get_session_factory()
+
     async def event_generator():
-        async for event in service.stream_message(conversation_id, payload.model_dump()):
-            yield {
-                "event": event["event"],
-                "data": json.dumps(event["data"], ensure_ascii=False),
-            }
+        async with session_factory() as session:
+            service = MessageService(session)
+            async for event in service.stream_message(conversation_id, request_payload):
+                yield {
+                    "event": event["event"],
+                    "data": json.dumps(event["data"], ensure_ascii=False),
+                }
 
     return EventSourceResponse(event_generator())
 
@@ -123,3 +129,9 @@ async def regenerate_message(conversation_id: str, service: MessageService = Dep
 @router.post("/{conversation_id}/messages/stop")
 async def stop_message(conversation_id: str, service: MessageService = Depends(_message_service)):
     return api_response(await service.stop_generation(conversation_id))
+
+
+@router.post("/{conversation_id}/messages/dedupe")
+async def dedupe_messages(conversation_id: str, service: MessageService = Depends(_message_service)):
+    result = await service.dedupe_messages(conversation_id)
+    return api_response(MessageDedupeResult.model_validate(result).model_dump(by_alias=True))

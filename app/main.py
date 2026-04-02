@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import ORJSONResponse
+from fastapi.responses import JSONResponse
 
 from app.api import api_router
 from app.config import get_settings
@@ -40,14 +40,14 @@ def create_app() -> FastAPI:
 
     @app.exception_handler(AppError)
     async def handle_app_error(request: Request, exc: AppError):  # noqa: ARG001
-        return ORJSONResponse(
+        return JSONResponse(
             status_code=exc.status_code,
             content=api_response({}, success=False, message=exc.message),
         )
 
     @app.exception_handler(Exception)
     async def handle_unexpected_error(request: Request, exc: Exception):  # noqa: ARG001
-        return ORJSONResponse(
+        return JSONResponse(
             status_code=500,
             content=api_response({}, success=False, message=str(exc)),
         )

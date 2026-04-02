@@ -1,22 +1,22 @@
 import {
-  Globe,
-  Code,
-  Image,
-  BookOpen,
-  Languages,
   BarChart3,
+  BookOpen,
+  Code,
+  Globe,
+  Image,
+  Languages,
   Sparkles,
   type LucideIcon,
 } from 'lucide-react'
 import type { Skill } from '@/types'
 import { cn } from '@/utils'
+import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
 import {
   Card,
   CardContent,
 } from '@/components/ui/card'
-import { Badge } from '@/components/ui/badge'
 import { Switch } from '@/components/ui/switch'
-import { Button } from '@/components/ui/button'
 
 const ICON_MAP: Record<string, LucideIcon> = {
   'mdi:web': Globe,
@@ -50,57 +50,50 @@ export function SkillCard({ skill, onToggle, onViewDetail }: SkillCardProps) {
   return (
     <Card
       className={cn(
-        'group relative transition-all duration-200 hover:shadow-md hover:-translate-y-0.5 cursor-pointer',
+        'group relative cursor-pointer transition-all duration-200 hover:-translate-y-0.5 hover:shadow-md',
         !skill.enabled && 'opacity-60',
       )}
       onClick={() => onViewDetail(skill)}
     >
       <CardContent className="p-5">
-        {/* Icon + Toggle row */}
-        <div className="flex items-start justify-between mb-3">
+        <div className="mb-3 flex items-start justify-between">
           <div
             className={cn(
-              'flex items-center justify-center w-11 h-11 rounded-xl',
+              'flex h-11 w-11 items-center justify-center rounded-xl',
               iconColor,
             )}
           >
-            <IconComponent className="w-5.5 h-5.5" />
+            <IconComponent className="h-5.5 w-5.5" />
           </div>
-          <div
-            onClick={(e) => e.stopPropagation()}
-          >
+          <div onClick={event => event.stopPropagation()}>
             <Switch
               checked={skill.enabled}
-              onCheckedChange={(checked) => onToggle(skill.id, checked)}
+              onCheckedChange={checked => onToggle(skill.id, checked)}
             />
           </div>
         </div>
 
-        {/* Name */}
-        <h3 className="font-semibold text-sm mb-1.5 group-hover:text-(--color-primary) transition-colors">
+        <h3 className="mb-1.5 text-sm font-semibold transition-colors group-hover:text-(--color-primary)">
           {skill.name}
         </h3>
 
-        {/* Description */}
-        <p className="text-xs text-(--color-muted-foreground) line-clamp-2 mb-3 leading-relaxed">
+        <p className="mb-3 line-clamp-2 text-xs leading-relaxed text-(--color-muted-foreground)">
           {skill.description}
         </p>
 
-        {/* Tags */}
-        <div className="flex flex-wrap gap-1.5 mb-3">
-          {skill.tags.slice(0, 3).map((tag) => (
+        <div className="mb-3 flex flex-wrap gap-1.5">
+          {skill.tags.slice(0, 3).map(tag => (
             <Badge
               key={tag}
               variant="secondary"
-              className="text-[10px] px-1.5 py-0 h-5 font-normal"
+              className="h-5 px-1.5 py-0 text-[10px] font-normal"
             >
               {tag}
             </Badge>
           ))}
         </div>
 
-        {/* Footer: version + author + action */}
-        <div className="flex items-center justify-between pt-2 border-t border-(--color-border)">
+        <div className="flex items-center justify-between border-t border-(--color-border) pt-2">
           <span className="text-[11px] text-(--color-muted-foreground)">
             v{skill.version} · {skill.author}
           </span>
@@ -108,8 +101,8 @@ export function SkillCard({ skill, onToggle, onViewDetail }: SkillCardProps) {
             variant="ghost"
             size="sm"
             className="h-6 px-2 text-xs text-(--color-primary) hover:text-(--color-primary)"
-            onClick={(e) => {
-              e.stopPropagation()
+            onClick={(event) => {
+              event.stopPropagation()
               onViewDetail(skill)
             }}
           >

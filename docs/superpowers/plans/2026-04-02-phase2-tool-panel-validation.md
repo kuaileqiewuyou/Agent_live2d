@@ -1,4 +1,4 @@
-﻿# Phase 2 Tool Panel Validation Checklist
+# Phase 2 Tool Panel Validation Checklist
 
 ## Goal
 Validate the tool-panel flow end-to-end before stage closure, with emphasis on manual tool triggering, fallback behavior, and per-conversation draft recovery.

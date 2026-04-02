@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 
-from app.api.routes import conversations, health, mcp, memory, meta, model_configs, personas, skills
+from app.api.routes import conversations, health, mcp, memory, meta, model_configs, personas, settings, skills
 
 api_router = APIRouter()
 api_router.include_router(health.router, prefix="/health", tags=["health"])
@@ -11,4 +11,4 @@ api_router.include_router(skills.router, prefix="/skills", tags=["skills"])
 api_router.include_router(mcp.router, prefix="/mcp/servers", tags=["mcp"])
 api_router.include_router(memory.router, prefix="/memory", tags=["memory"])
 api_router.include_router(meta.router, prefix="/meta", tags=["meta"])
-
+api_router.include_router(settings.router, prefix="/settings", tags=["settings"])

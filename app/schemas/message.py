@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Literal
 
 from pydantic import Field
 
@@ -27,10 +28,21 @@ class MessageBase(CamelModel):
     attachments: list[MessageAttachment] = Field(default_factory=list)
 
 
+class ManualToolRequest(CamelModel):
+    id: str
+    type: Literal["skill", "mcp"]
+    target_id: str
+    label: str
+    input_text: str | None = None
+    input_params: dict[str, str] = Field(default_factory=dict)
+    auto_execute: bool = False
+
+
 class MessageCreateRequest(CamelModel):
     content: str
     attachments: list[MessageAttachment] = Field(default_factory=list)
     metadata: dict = Field(default_factory=dict)
+    manual_tool_requests: list[ManualToolRequest] = Field(default_factory=list)
 
 
 class MessageRegenerateRequest(CamelModel):
@@ -55,3 +67,12 @@ class ChatTurnResult(CamelModel):
 class StreamEvent(CamelModel):
     event: str
     data: dict
+
+
+class MessageDedupeResult(CamelModel):
+    conversation_id: str
+    total_before: int
+    total_after: int
+    deleted_count: int
+    deleted_turn_count: int
+    deleted_message_ids: list[str] = Field(default_factory=list)

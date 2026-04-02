@@ -1,7 +1,7 @@
-import type { ProviderType } from '../types/model-config'
-import type { Live2DState } from '../types/live2d'
 import type { ChatLayoutMode } from '../types/conversation'
+import type { Live2DState } from '../types/live2d'
 import type { MCPTransportType } from '../types/mcp'
+import type { ProviderType } from '../types/model-config'
 import type { AppSettings } from '../types/settings'
 
 export const APP_NAME = 'AI 伙伴'
@@ -38,8 +38,8 @@ export const LIVE2D_STATE_LABELS: Record<Live2DState, string> = {
 }
 
 export const LAYOUT_MODE_LABELS: Record<ChatLayoutMode, string> = {
-  chat: '微信式聊天',
-  companion: '陪伴气泡',
+  chat: '聊天模式',
+  companion: '陪伴模式',
 }
 
 export const MCP_TRANSPORT_LABELS: Record<MCPTransportType, string> = {
@@ -49,6 +49,7 @@ export const MCP_TRANSPORT_LABELS: Record<MCPTransportType, string> = {
 
 export const DEFAULT_SETTINGS: AppSettings = {
   theme: 'system',
+  backgroundImage: null,
   backgroundBlur: 0,
   backgroundOverlayOpacity: 0.5,
   defaultLayoutMode: 'chat',

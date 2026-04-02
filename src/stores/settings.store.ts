@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import type { AppSettings, ThemeMode } from '@/types'
 import { DEFAULT_SETTINGS } from '@/constants'
+import { settingsService } from '@/services'
 
 interface SettingsState {
   settings: AppSettings
@@ -10,7 +11,7 @@ interface SettingsState {
 }
 
 export const useSettingsStore = create<SettingsState>((set) => ({
-  settings: { ...DEFAULT_SETTINGS },
+  settings: settingsService.getCachedSettings() || { ...DEFAULT_SETTINGS },
   setSettings: (settings) => set({ settings }),
   updateSettings: (updates) =>
     set((s) => ({ settings: { ...s.settings, ...updates } })),

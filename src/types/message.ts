@@ -1,6 +1,8 @@
 export type MessageRole = 'user' | 'assistant' | 'system' | 'tool'
 export type MessageStatus = 'sending' | 'streaming' | 'done' | 'error'
 export type ToolStatus = 'calling' | 'success' | 'error'
+export type ManualToolType = 'skill' | 'mcp'
+export type ManualToolParamType = 'string' | 'number' | 'boolean' | 'enum'
 
 export interface MessageAttachment {
   id: string
@@ -8,6 +10,27 @@ export interface MessageAttachment {
   type: string
   url: string
   size: number
+}
+
+export interface ManualToolInputParams {
+  goal?: string
+  scope?: string
+  output?: string
+  notes?: string
+  [key: string]: string | undefined
+}
+
+export interface ManualToolRequest {
+  id: string
+  type: ManualToolType
+  targetId: string
+  label: string
+  inputText?: string
+  inputParams?: ManualToolInputParams
+  autoExecute?: boolean
+  requiredFields?: string[]
+  fieldTypes?: Record<string, ManualToolParamType>
+  fieldOptions?: Record<string, string[]>
 }
 
 export interface Message {

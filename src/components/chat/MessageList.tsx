@@ -1,9 +1,9 @@
-import { useRef, useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 import { MessageCircle } from 'lucide-react'
 import { cn } from '@/utils'
-import type { Message, ChatLayoutMode } from '@/types'
-import { ScrollArea } from '@/components/ui/scroll-area'
+import type { ChatLayoutMode, Message } from '@/types'
 import { MessageBubble } from '@/components/chat/MessageBubble'
+import { ScrollArea } from '@/components/ui/scroll-area'
 
 interface MessageListProps {
   messages: Message[]
@@ -19,7 +19,7 @@ function EmptyState() {
       </div>
       <div className="text-center">
         <p className="text-lg font-medium">开始新的对话吧</p>
-        <p className="mt-1 text-sm">发送一条消息来开始交流</p>
+        <p className="mt-1 text-sm">发送一条消息，看看你的 AI 伙伴会怎么回应。</p>
       </div>
     </div>
   )
@@ -28,17 +28,17 @@ function EmptyState() {
 function LoadingSkeleton() {
   return (
     <div className="flex flex-col gap-4 p-4">
-      {[1, 2, 3].map((i) => (
-        <div key={i} className="flex gap-3">
-          <div className="h-8 w-8 rounded-full bg-(--color-muted) animate-pulse shrink-0" />
-          <div className="flex flex-col gap-2 flex-1">
+      {[1, 2, 3].map((index) => (
+        <div key={index} className="flex gap-3">
+          <div className="h-8 w-8 shrink-0 animate-pulse rounded-full bg-(--color-muted)" />
+          <div className="flex flex-1 flex-col gap-2">
             <div
-              className="h-4 rounded bg-(--color-muted) animate-pulse"
-              style={{ width: `${40 + i * 15}%` }}
+              className="h-4 animate-pulse rounded bg-(--color-muted)"
+              style={{ width: `${40 + index * 15}%` }}
             />
             <div
-              className="h-4 rounded bg-(--color-muted) animate-pulse"
-              style={{ width: `${30 + i * 10}%` }}
+              className="h-4 animate-pulse rounded bg-(--color-muted)"
+              style={{ width: `${30 + index * 10}%` }}
             />
           </div>
         </div>
@@ -73,8 +73,8 @@ export function MessageList({ messages, layoutMode, isLoading }: MessageListProp
   return (
     <ScrollArea className={cn('flex-1')}>
       <div className="flex flex-col gap-1 py-4">
-        {messages.map((msg) => (
-          <MessageBubble key={msg.id} message={msg} layoutMode={layoutMode} />
+        {messages.map(message => (
+          <MessageBubble key={message.id} message={message} layoutMode={layoutMode} />
         ))}
         <div ref={bottomRef} />
       </div>

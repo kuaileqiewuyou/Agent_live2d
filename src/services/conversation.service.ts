@@ -1,4 +1,8 @@
-import type { Conversation } from '@/types'
+import type {
+  Conversation,
+  CreateConversationInput,
+  UpdateConversationInput,
+} from '@/types'
 import { apiRequest, isMockMode } from '@/api'
 import { mockConversations } from '@/mock'
 import { generateId } from '@/utils'
@@ -14,25 +18,26 @@ async function getConversations(): Promise<Conversation[]> {
   if (isMockMode()) {
     return [...conversations]
   }
+
   const res = await apiRequest<ListResponse<Conversation>>('/api/conversations')
   return res.data.items
 }
 
 async function getConversation(id: string): Promise<Conversation | undefined> {
   if (isMockMode()) {
-    return conversations.find((c) => c.id === id)
+    return conversations.find(conversation => conversation.id === id)
   }
+
   const res = await apiRequest<Conversation>(`/api/conversations/${id}`)
   return res.data
 }
 
-async function createConversation(
-  data: Omit<Conversation, 'id' | 'createdAt' | 'updatedAt'>
-): Promise<Conversation> {
+async function createConversation(data: CreateConversationInput): Promise<Conversation> {
   if (isMockMode()) {
     const now = new Date().toISOString()
     const conversation: Conversation = {
       ...data,
+      title: data.title?.trim() || '新的会话',
       id: generateId(),
       createdAt: now,
       updatedAt: now,
@@ -40,6 +45,7 @@ async function createConversation(
     conversations.unshift(conversation)
     return conversation
   }
+
   const res = await apiRequest<Conversation>('/api/conversations', {
     method: 'POST',
     body: JSON.stringify(data),
@@ -49,13 +55,14 @@ async function createConversation(
 
 async function updateConversation(
   id: string,
-  data: Partial<Conversation>
+  data: UpdateConversationInput,
 ): Promise<Conversation> {
   if (isMockMode()) {
-    const index = conversations.findIndex((c) => c.id === id)
+    const index = conversations.findIndex(conversation => conversation.id === id)
     if (index === -1) {
       throw new Error(`Conversation not found: ${id}`)
     }
+
     const updated: Conversation = {
       ...conversations[index],
       ...data,
@@ -65,6 +72,7 @@ async function updateConversation(
     conversations[index] = updated
     return updated
   }
+
   const res = await apiRequest<Conversation>(`/api/conversations/${id}`, {
     method: 'PATCH',
     body: JSON.stringify(data),
@@ -74,9 +82,10 @@ async function updateConversation(
 
 async function deleteConversation(id: string): Promise<void> {
   if (isMockMode()) {
-    conversations = conversations.filter((c) => c.id !== id)
+    conversations = conversations.filter(conversation => conversation.id !== id)
     return
   }
+
   await apiRequest<void>(`/api/conversations/${id}`, {
     method: 'DELETE',
   })

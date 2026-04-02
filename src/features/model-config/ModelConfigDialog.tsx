@@ -1,22 +1,22 @@
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { useForm, Controller } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
+import { Eye, EyeOff } from 'lucide-react'
 import type { ModelConfig, ProviderType } from '@/types'
-import { PROVIDER_LABELS, PROVIDER_DEFAULT_URLS, TERMS } from '@/constants'
+import { PROVIDER_DEFAULT_URLS, PROVIDER_LABELS } from '@/constants'
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
-import { Switch } from '@/components/ui/switch'
-import { ScrollArea } from '@/components/ui/scroll-area'
 import {
   Dialog,
   DialogContent,
-  DialogHeader,
-  DialogTitle,
   DialogDescription,
   DialogFooter,
+  DialogHeader,
+  DialogTitle,
 } from '@/components/ui/dialog'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { ScrollArea } from '@/components/ui/scroll-area'
 import {
   Select,
   SelectContent,
@@ -24,8 +24,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import { Eye, EyeOff } from 'lucide-react'
-import { useState } from 'react'
+import { Switch } from '@/components/ui/switch'
 
 const modelConfigSchema = z.object({
   name: z.string().min(1, '配置名称不能为空'),
@@ -49,7 +48,33 @@ interface ModelConfigDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   config?: ModelConfig | null
-  onSubmit: (data: Omit<ModelConfig, 'id' | 'createdAt' | 'updatedAt'>) => void
+  onSubmit: (data: Omit<ModelConfig, 'id' | 'createdAt' | 'updatedAt'>) => Promise<void>
+}
+
+function getDefaultValues(config?: ModelConfig | null): ModelConfigFormValues {
+  if (!config) {
+    return {
+      name: '',
+      provider: 'openai-compatible',
+      baseUrl: PROVIDER_DEFAULT_URLS['openai-compatible'],
+      apiKey: '',
+      model: '',
+      streamEnabled: true,
+      toolCallSupported: false,
+      isDefault: false,
+    }
+  }
+
+  return {
+    name: config.name,
+    provider: config.provider,
+    baseUrl: config.baseUrl,
+    apiKey: config.apiKey,
+    model: config.model,
+    streamEnabled: config.streamEnabled,
+    toolCallSupported: config.toolCallSupported,
+    isDefault: config.isDefault,
+  }
 }
 
 export function ModelConfigDialog({
@@ -69,60 +94,45 @@ export function ModelConfigDialog({
     setValue,
     reset,
     formState: { errors, isSubmitting },
-  } = useForm({
+  } = useForm<ModelConfigFormValues>({
     resolver: zodResolver(modelConfigSchema) as any,
-    defaultValues: config
-      ? {
-          name: config.name,
-          provider: config.provider,
-          baseUrl: config.baseUrl,
-          apiKey: config.apiKey,
-          model: config.model,
-          streamEnabled: config.streamEnabled,
-          toolCallSupported: config.toolCallSupported,
-          isDefault: config.isDefault,
-        }
-      : {
-          name: '',
-          provider: 'openai-compatible',
-          baseUrl: PROVIDER_DEFAULT_URLS['openai-compatible'],
-          apiKey: '',
-          model: '',
-          streamEnabled: true,
-          toolCallSupported: false,
-          isDefault: false,
-        },
+    defaultValues: getDefaultValues(config),
   })
 
   const provider = watch('provider')
 
-  // Auto-fill baseUrl when provider changes
+  useEffect(() => {
+    if (open) {
+      reset(getDefaultValues(config))
+      setShowApiKey(false)
+    }
+  }, [config, open, reset])
+
   useEffect(() => {
     if (!isEditing && provider) {
       setValue('baseUrl', PROVIDER_DEFAULT_URLS[provider as ProviderType])
     }
   }, [provider, setValue, isEditing])
 
-  const onFormSubmit = (data: ModelConfigFormValues) => {
-    onSubmit({
+  const onFormSubmit = async (data: ModelConfigFormValues) => {
+    await onSubmit({
       ...data,
       apiKey: data.apiKey ?? '',
       provider: data.provider as ProviderType,
     })
-    reset()
+    reset(getDefaultValues(null))
     setShowApiKey(false)
-    onOpenChange(false)
   }
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-lg max-h-[90vh] p-0">
+      <DialogContent className="max-h-[90vh] max-w-lg p-0">
         <DialogHeader className="px-6 pt-6">
           <DialogTitle>{isEditing ? '编辑配置' : '新建配置'}</DialogTitle>
           <DialogDescription>
             {isEditing
-              ? '修改模型配置的连接信息和参数'
-              : '添加一个新的 AI 模型配置'}
+              ? '修改模型配置的连接信息和运行参数。'
+              : '添加一个新的 AI 模型配置。'}
           </DialogDescription>
         </DialogHeader>
 
@@ -132,7 +142,6 @@ export function ModelConfigDialog({
             onSubmit={handleSubmit(onFormSubmit as any)}
             className="space-y-5 px-6 pb-2"
           >
-            {/* 配置名称 */}
             <div className="space-y-1.5">
               <Label htmlFor="name">配置名称 *</Label>
               <Input
@@ -141,13 +150,12 @@ export function ModelConfigDialog({
                 {...register('name')}
               />
               {errors.name && (
-                <p className="text-xs text-(--color-destructive) mt-1">
+                <p className="mt-1 text-xs text-(--color-destructive)">
                   {errors.name.message}
                 </p>
               )}
             </div>
 
-            {/* 供应商 */}
             <div className="space-y-1.5">
               <Label>供应商 *</Label>
               <Controller
@@ -159,12 +167,7 @@ export function ModelConfigDialog({
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      {(
-                        Object.entries(PROVIDER_LABELS) as [
-                          ProviderType,
-                          string,
-                        ][]
-                      ).map(([value, label]) => (
+                      {(Object.entries(PROVIDER_LABELS) as [ProviderType, string][]).map(([value, label]) => (
                         <SelectItem key={value} value={value}>
                           {label}
                         </SelectItem>
@@ -175,7 +178,6 @@ export function ModelConfigDialog({
               />
             </div>
 
-            {/* Base URL */}
             <div className="space-y-1.5">
               <Label htmlFor="baseUrl">Base URL *</Label>
               <Input
@@ -184,13 +186,12 @@ export function ModelConfigDialog({
                 {...register('baseUrl')}
               />
               {errors.baseUrl && (
-                <p className="text-xs text-(--color-destructive) mt-1">
+                <p className="mt-1 text-xs text-(--color-destructive)">
                   {errors.baseUrl.message}
                 </p>
               )}
             </div>
 
-            {/* API Key */}
             <div className="space-y-1.5">
               <Label htmlFor="apiKey">API Key</Label>
               <div className="relative">
@@ -203,8 +204,8 @@ export function ModelConfigDialog({
                 />
                 <button
                   type="button"
-                  className="absolute right-2 top-1/2 -translate-y-1/2 p-1 rounded text-(--color-muted-foreground) hover:text-(--color-foreground)"
-                  onClick={() => setShowApiKey((v) => !v)}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-1 text-(--color-muted-foreground) hover:text-(--color-foreground)"
+                  onClick={() => setShowApiKey(value => !value)}
                 >
                   {showApiKey ? (
                     <EyeOff className="h-4 w-4" />
@@ -215,22 +216,20 @@ export function ModelConfigDialog({
               </div>
             </div>
 
-            {/* 模型名称 */}
             <div className="space-y-1.5">
               <Label htmlFor="model">模型名称 *</Label>
               <Input
                 id="model"
-                placeholder="例如：gpt-4o, claude-sonnet-4-20250514"
+                placeholder="例如：gpt-4o、claude-sonnet-4-20250514"
                 {...register('model')}
               />
               {errors.model && (
-                <p className="text-xs text-(--color-destructive) mt-1">
+                <p className="mt-1 text-xs text-(--color-destructive)">
                   {errors.model.message}
                 </p>
               )}
             </div>
 
-            {/* 启用流式输出 */}
             <div className="flex items-center justify-between">
               <Label htmlFor="streamEnabled" className="cursor-pointer">
                 启用流式输出
@@ -248,10 +247,9 @@ export function ModelConfigDialog({
               />
             </div>
 
-            {/* 支持工具调用 */}
             <div className="flex items-center justify-between">
               <Label htmlFor="toolCallSupported" className="cursor-pointer">
-                {TERMS.enableToolCall}
+                支持工具调用
               </Label>
               <Controller
                 name="toolCallSupported"
@@ -266,10 +264,9 @@ export function ModelConfigDialog({
               />
             </div>
 
-            {/* 设为默认 */}
             <div className="flex items-center justify-between">
               <Label htmlFor="isDefault" className="cursor-pointer">
-                设为默认
+                设为默认配置
               </Label>
               <Controller
                 name="isDefault"
@@ -299,7 +296,7 @@ export function ModelConfigDialog({
             form="model-config-form"
             disabled={isSubmitting}
           >
-            {isSubmitting ? '保存中...' : isEditing ? '保存修改' : '创建'}
+            {isSubmitting ? '保存中...' : isEditing ? '保存修改' : '创建配置'}
           </Button>
         </DialogFooter>
       </DialogContent>

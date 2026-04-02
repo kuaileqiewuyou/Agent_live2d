@@ -1,10 +1,10 @@
 import { useState } from 'react'
 import { History, X } from 'lucide-react'
 import { cn } from '@/utils'
-import type { Message, ChatLayoutMode } from '@/types'
+import type { ChatLayoutMode, Message } from '@/types'
 import { Button } from '@/components/ui/button'
-import { MessageList } from '@/components/chat/MessageList'
 import { MessageBubble } from '@/components/chat/MessageBubble'
+import { MessageList } from '@/components/chat/MessageList'
 
 interface ChatLayoutProps {
   layoutMode: ChatLayoutMode
@@ -17,21 +17,20 @@ interface ChatLayoutProps {
 
 function CompanionSpeechBubble({ messages }: { messages: Message[] }) {
   const lastAssistant = messages
-    .filter((m) => m.role === 'assistant' && m.status !== 'error')
+    .filter((message) => message.role === 'assistant' && message.status !== 'error')
     .at(-1)
 
   if (!lastAssistant) return null
 
   return (
-    <div className="absolute top-6 left-[38%] max-w-md max-h-[60%] z-10">
+    <div className="absolute left-[38%] top-6 z-10 max-h-[60%] max-w-md">
       <div className="relative">
-        <div className="rounded-2xl bg-(--color-card) border border-(--color-border) shadow-lg px-5 py-4 text-sm leading-relaxed overflow-y-auto max-h-[55vh]">
-          <div className="prose prose-sm dark:prose-invert max-w-none break-words">
+        <div className="max-h-[55vh] overflow-y-auto rounded-2xl border border-(--color-border) bg-(--color-card) px-5 py-4 text-sm leading-relaxed shadow-lg">
+          <div className="prose prose-sm max-w-none break-words dark:prose-invert">
             {lastAssistant.content}
           </div>
         </div>
-        {/* Tail pointing toward character */}
-        <div className="absolute bottom-4 -left-2 w-4 h-4 rotate-45 bg-(--color-card) border-l border-b border-(--color-border)" />
+        <div className="absolute -left-2 bottom-4 h-4 w-4 rotate-45 border-b border-l border-(--color-border) bg-(--color-card)" />
       </div>
     </div>
   )
@@ -47,11 +46,10 @@ export function ChatLayout({
 }: ChatLayoutProps) {
   const [historyOpen, setHistoryOpen] = useState(false)
 
-  // Chat mode layout (WeChat-style)
   if (layoutMode === 'chat') {
     return (
       <div className="flex h-full">
-        <div className="flex flex-1 flex-col min-w-0">
+        <div className="flex min-w-0 flex-1 flex-col">
           <MessageList
             messages={messages}
             layoutMode="chat"
@@ -60,7 +58,7 @@ export function ChatLayout({
           {inputSlot}
         </div>
 
-        <div className="hidden lg:flex w-[300px] shrink-0 flex-col border-l border-(--color-border) bg-(--color-muted)/20">
+        <div className="hidden w-[300px] shrink-0 flex-col border-l border-(--color-border) bg-(--color-muted)/20 lg:flex">
           <div className="flex flex-1 items-center justify-center">
             {live2dSlot}
           </div>
@@ -70,25 +68,20 @@ export function ChatLayout({
     )
   }
 
-  // Companion mode layout
   return (
-    <div className="flex flex-1 flex-col min-w-0 h-full relative">
-      {/* Main stage area */}
+    <div className="relative flex h-full min-w-0 flex-1 flex-col">
       <div className="relative flex-1 overflow-hidden">
-        {/* Live2D character — center-left */}
         <div className="absolute inset-0 flex items-center justify-start pl-[10%]">
           {live2dSlot}
         </div>
 
-        {/* Single speech bubble — top-right of character */}
         <CompanionSpeechBubble messages={messages} />
 
-        {/* Chat history toggle — top-left */}
         <Button
           variant="outline"
           size="sm"
           className={cn(
-            'absolute top-4 left-4 z-20 gap-2 rounded-full bg-(--color-background)/80 backdrop-blur-sm shadow-sm',
+            'absolute left-4 top-4 z-20 gap-2 rounded-full bg-(--color-background)/80 shadow-sm backdrop-blur-sm',
             historyOpen && 'hidden',
           )}
           onClick={() => setHistoryOpen(true)}
@@ -97,16 +90,15 @@ export function ChatLayout({
           聊天记录
         </Button>
 
-        {/* Chat history panel overlay — top-left */}
         <div
           className={cn(
-            'absolute top-4 left-4 z-30 w-[360px] flex flex-col rounded-2xl border border-(--color-border) bg-(--color-background)/95 backdrop-blur-md shadow-xl transition-all duration-200',
+            'absolute left-4 top-4 z-30 flex w-[360px] flex-col rounded-2xl border border-(--color-border) bg-(--color-background)/95 shadow-xl backdrop-blur-md transition-all duration-200',
             historyOpen
-              ? 'opacity-100 translate-y-0 h-[70%]'
-              : 'opacity-0 -translate-y-2 pointer-events-none h-0',
+              ? 'h-[70%] translate-y-0 opacity-100'
+              : 'pointer-events-none h-0 -translate-y-2 opacity-0',
           )}
         >
-          <div className="flex items-center justify-between px-4 py-3 border-b border-(--color-border) shrink-0">
+          <div className="flex shrink-0 items-center justify-between border-b border-(--color-border) px-4 py-3">
             <span className="text-sm font-medium">聊天记录</span>
             <Button
               variant="ghost"
@@ -117,17 +109,16 @@ export function ChatLayout({
               <X className="h-4 w-4" />
             </Button>
           </div>
-          <div className="flex-1 overflow-y-auto min-h-0">
+          <div className="min-h-0 flex-1 overflow-y-auto">
             <div className="flex flex-col gap-1 p-2">
-              {messages.map((msg) => (
-                <MessageBubble key={msg.id} message={msg} layoutMode="chat" />
+              {messages.map((message) => (
+                <MessageBubble key={message.id} message={message} layoutMode="chat" />
               ))}
             </div>
           </div>
         </div>
       </div>
 
-      {/* Input at bottom */}
       {inputSlot}
     </div>
   )

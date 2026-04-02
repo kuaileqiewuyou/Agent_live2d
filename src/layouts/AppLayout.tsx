@@ -1,24 +1,38 @@
+import { Suspense, lazy } from 'react'
 import { Outlet } from 'react-router-dom'
-import { useSettingsStore } from '@/stores'
 import { Sidebar } from '@/components/layout/Sidebar'
-import { NewConversationDialog } from '@/components/layout/NewConversationDialog'
+import { useSettingsStore, useUIStore } from '@/stores'
+
+const NewConversationDialog = lazy(async () => {
+  const module = await import('@/components/layout/NewConversationDialog')
+  return { default: module.NewConversationDialog }
+})
 
 export function AppLayout() {
   const { settings } = useSettingsStore()
+  const showNewConversationDialog = useUIStore((state) => state.showNewConversationDialog)
+  const backgroundValue = settings.backgroundImage?.trim()
+  const isGradientBackground
+    = !!backgroundValue
+      && /^(linear-gradient|radial-gradient|conic-gradient|repeating-linear-gradient|repeating-radial-gradient)\(/.test(backgroundValue)
+  const backgroundStyle = backgroundValue
+    ? isGradientBackground
+      ? { background: backgroundValue }
+      : { backgroundImage: `url(${backgroundValue})` }
+    : undefined
 
   return (
-    <div className="h-screen w-screen overflow-hidden flex relative">
-      {/* Background image layer */}
-      {settings.backgroundImage && (
+    <div className="relative flex h-screen w-screen overflow-hidden">
+      {backgroundStyle && (
         <div
-          className="absolute inset-0 bg-cover bg-center z-0"
+          className="absolute inset-0 z-0 bg-cover bg-center"
           style={{
-            backgroundImage: `url(${settings.backgroundImage})`,
+            ...backgroundStyle,
             filter: `blur(${settings.backgroundBlur}px)`,
           }}
         />
       )}
-      {settings.backgroundImage && (
+      {backgroundStyle && (
         <div
           className="absolute inset-0 z-0"
           style={{
@@ -27,14 +41,18 @@ export function AppLayout() {
         />
       )}
 
-      {/* Content */}
       <div className="relative z-10 flex h-full w-full">
         <Sidebar />
         <main className="flex-1 overflow-hidden">
           <Outlet />
         </main>
       </div>
-      <NewConversationDialog />
+
+      {showNewConversationDialog && (
+        <Suspense fallback={null}>
+          <NewConversationDialog />
+        </Suspense>
+      )}
     </div>
   )
 }

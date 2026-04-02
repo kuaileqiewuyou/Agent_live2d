@@ -1,3 +1,4 @@
+import { Brain, Edit2, MessageSquare, Trash2 } from 'lucide-react'
 import type { Persona } from '@/types'
 import { LAYOUT_MODE_LABELS } from '@/constants'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
@@ -9,7 +10,6 @@ import {
   CardFooter,
   CardHeader,
 } from '@/components/ui/card'
-import { Brain, Edit2, MessageSquare, Trash2 } from 'lucide-react'
 
 interface PersonaCardProps {
   persona: Persona
@@ -28,15 +28,17 @@ export function PersonaCard({ persona, onEdit, onDelete }: PersonaCardProps) {
           </AvatarFallback>
         </Avatar>
         <div className="flex-1 space-y-1">
-          <h3 className="font-semibold text-base leading-tight">{persona.name}</h3>
-          <p className="text-sm text-(--color-muted-foreground) line-clamp-2">{persona.description}</p>
+          <h3 className="text-base font-semibold leading-tight">{persona.name}</h3>
+          <p className="line-clamp-2 text-sm text-(--color-muted-foreground)">
+            {persona.description}
+          </p>
         </div>
       </CardHeader>
 
       <CardContent className="flex-1 space-y-3">
         {persona.personalityTags.length > 0 && (
           <div className="flex flex-wrap gap-1.5">
-            {persona.personalityTags.map((tag) => (
+            {persona.personalityTags.map(tag => (
               <Badge key={tag} variant="secondary" className="text-xs">
                 {tag}
               </Badge>
@@ -45,7 +47,7 @@ export function PersonaCard({ persona, onEdit, onDelete }: PersonaCardProps) {
         )}
 
         {persona.speakingStyle && (
-          <p className="text-xs text-(--color-muted-foreground) line-clamp-2">
+          <p className="line-clamp-2 text-xs text-(--color-muted-foreground)">
             {persona.speakingStyle}
           </p>
         )}

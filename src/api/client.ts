@@ -1,6 +1,7 @@
-const USE_MOCK = import.meta.env.VITE_USE_MOCK !== 'false'
-
+import { normalizeRequestError, parseApiError } from '@/api/errors'
 import { keysToCamel, keysToSnake } from '@/utils/case-convert'
+
+const USE_MOCK = import.meta.env.VITE_USE_MOCK !== 'false'
 
 export interface ApiResponse<T> {
   data: T
@@ -9,9 +10,10 @@ export interface ApiResponse<T> {
 }
 
 /**
- * Unified API request helper.
- * - Convert request JSON body from camelCase to snake_case.
- * - Convert response payload from snake_case to camelCase.
+ * 统一的 API 请求封装。
+ * - 请求体中的 camelCase 会转换为 snake_case
+ * - 响应中的 snake_case 会转换为 camelCase
+ * - 网络错误和接口错误会被标准化成可读提示
  */
 export async function apiRequest<T>(
   endpoint: string,
@@ -33,21 +35,26 @@ export async function apiRequest<T>(
       }
     }
     catch {
-      // Ignore invalid JSON body and keep original payload.
+      // Non-JSON bodies are passed through unchanged.
     }
   }
 
-  const response = await fetch(`${baseUrl}${endpoint}`, {
-    headers: { 'Content-Type': 'application/json', ...processedOptions?.headers },
-    ...processedOptions,
-  })
+  try {
+    const response = await fetch(`${baseUrl}${endpoint}`, {
+      headers: { 'Content-Type': 'application/json', ...processedOptions?.headers },
+      ...processedOptions,
+    })
 
-  if (!response.ok) {
-    throw new Error(`API Error: ${response.status} ${response.statusText}`)
+    if (!response.ok) {
+      throw await parseApiError(response)
+    }
+
+    const raw = await response.json()
+    return keysToCamel<ApiResponse<T>>(raw)
   }
-
-  const raw = await response.json()
-  return keysToCamel<ApiResponse<T>>(raw)
+  catch (error) {
+    throw normalizeRequestError(error)
+  }
 }
 
 export function isMockMode(): boolean {

@@ -13,3 +13,24 @@ export interface Conversation {
   updatedAt: string
   lastMessage?: string
 }
+
+export interface CreateConversationInput {
+  title?: string
+  personaId: string
+  modelConfigId: string
+  layoutMode: ChatLayoutMode
+  enabledSkillIds: string[]
+  enabledMcpServerIds: string[]
+  pinned: boolean
+  inheritPersonaLongTermMemory?: boolean
+}
+
+export interface UpdateConversationInput {
+  title?: string
+  personaId?: string
+  modelConfigId?: string
+  layoutMode?: ChatLayoutMode
+  enabledSkillIds?: string[]
+  enabledMcpServerIds?: string[]
+  pinned?: boolean
+}

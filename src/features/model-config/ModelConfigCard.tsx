@@ -1,15 +1,4 @@
 import { useState } from 'react'
-import type { ModelConfig, ProviderType } from '@/types'
-import { PROVIDER_LABELS, TERMS } from '@/constants'
-import { modelService } from '@/services'
-import { Badge } from '@/components/ui/badge'
-import { Button } from '@/components/ui/button'
-import {
-  Card,
-  CardContent,
-  CardFooter,
-  CardHeader,
-} from '@/components/ui/card'
 import {
   CheckCircle,
   Edit2,
@@ -21,7 +10,18 @@ import {
   Zap,
   Wrench,
 } from 'lucide-react'
+import type { ModelConfig, ProviderType } from '@/types'
+import { modelService } from '@/services'
+import { PROVIDER_LABELS } from '@/constants'
 import { cn } from '@/utils'
+import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
+import {
+  Card,
+  CardContent,
+  CardFooter,
+  CardHeader,
+} from '@/components/ui/card'
 
 const PROVIDER_COLORS: Record<ProviderType, string> = {
   'openai-compatible':
@@ -57,9 +57,11 @@ export function ModelConfigCard({
     try {
       const result = await modelService.testConnection(config.id)
       setTestResult(result)
-    } catch {
+    }
+    catch {
       setTestResult({ success: false, message: '连接测试失败' })
-    } finally {
+    }
+    finally {
       setTesting(false)
       setTimeout(() => setTestResult(null), 4000)
     }
@@ -70,7 +72,7 @@ export function ModelConfigCard({
       <CardHeader className="space-y-2">
         <div className="flex items-start justify-between">
           <div className="flex items-center gap-2">
-            <h3 className="font-semibold text-base">{config.name}</h3>
+            <h3 className="text-base font-semibold">{config.name}</h3>
             {config.isDefault && (
               <Star className="h-4 w-4 fill-amber-400 text-amber-400" />
             )}
@@ -87,11 +89,11 @@ export function ModelConfigCard({
       <CardContent className="flex-1 space-y-3">
         <div className="space-y-1.5 text-sm">
           <div className="flex items-center gap-2 text-(--color-muted-foreground)">
-            <span className="shrink-0 font-medium w-16">模型</span>
+            <span className="w-16 shrink-0 font-medium">模型</span>
             <span className="truncate">{config.model}</span>
           </div>
           <div className="flex items-center gap-2 text-(--color-muted-foreground)">
-            <span className="shrink-0 font-medium w-16">地址</span>
+            <span className="w-16 shrink-0 font-medium">地址</span>
             <span className="truncate text-xs">{config.baseUrl}</span>
           </div>
         </div>
@@ -106,16 +108,15 @@ export function ModelConfigCard({
           {config.toolCallSupported && (
             <Badge variant="secondary" className="gap-1 text-xs">
               <Wrench className="h-3 w-3" />
-              {TERMS.toolCall}
+              工具调用
             </Badge>
           )}
         </div>
 
-        {/* Connection test result */}
         {testResult && (
           <div
             className={cn(
-              'flex items-center gap-1.5 text-xs rounded-md px-2.5 py-1.5',
+              'flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs',
               testResult.success
                 ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-400'
                 : 'bg-red-500/10 text-red-700 dark:text-red-400',

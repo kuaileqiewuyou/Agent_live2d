@@ -1,16 +1,15 @@
 import process from 'node:process'
 import { spawn } from 'node:child_process'
-import { readFile } from 'node:fs/promises'
-import { resolve } from 'node:path'
+import { setTimeout as delay } from 'node:timers/promises'
 
 const HELP_TEXT = `
 Release smoke steps:
 1. python -m pytest -q
 2. npm run test:unit
 3. npm run test:e2e
-4. npm run local:up
-5. npm run local:check
-6. npm run local:down
+4. docker compose up --build -d app qdrant
+5. GET http://127.0.0.1:18001/api/health
+6. docker compose down
 
 Usage:
   npm run smoke:release
@@ -27,32 +26,11 @@ function run(command, args, options = {}) {
     resolvedArgs = ['/d', '/s', '/c', command, ...args]
   }
 
-  const quiet = options.quiet === true
-  const spawnOptions = { ...options }
-  delete spawnOptions.quiet
-
   return new Promise((resolve, reject) => {
     const child = spawn(resolvedCommand, resolvedArgs, {
-      stdio: quiet ? ['ignore', 'pipe', 'pipe'] : 'inherit',
-      ...spawnOptions,
+      stdio: 'inherit',
+      ...options,
     })
-
-    let stdoutBuffer = ''
-    let stderrBuffer = ''
-    if (quiet) {
-      child.stdout?.on('data', (chunk) => {
-        stdoutBuffer += String(chunk)
-        if (stdoutBuffer.length > 20000) {
-          stdoutBuffer = stdoutBuffer.slice(-20000)
-        }
-      })
-      child.stderr?.on('data', (chunk) => {
-        stderrBuffer += String(chunk)
-        if (stderrBuffer.length > 20000) {
-          stderrBuffer = stderrBuffer.slice(-20000)
-        }
-      })
-    }
 
     child.on('error', reject)
     child.on('exit', (code) => {
@@ -60,42 +38,31 @@ function run(command, args, options = {}) {
         resolve()
         return
       }
-      if (quiet) {
-        if (stdoutBuffer.trim()) {
-          console.error(`[quiet-stdout] ${stdoutBuffer.trim()}`)
-        }
-        if (stderrBuffer.trim()) {
-          console.error(`[quiet-stderr] ${stderrBuffer.trim()}`)
-        }
-      }
       reject(new Error(`${resolvedCommand} ${resolvedArgs.join(' ')} failed with exit code ${code}`))
     })
   })
 }
 
-async function readPackageScripts(cwd = process.cwd()) {
-  try {
-    const packageJsonPath = resolve(cwd, 'package.json')
-    const packageRaw = await readFile(packageJsonPath, 'utf8')
-    const parsed = JSON.parse(packageRaw)
-    return parsed?.scripts ?? {}
+async function waitForHealth(url, retries = 40, intervalMs = 3000) {
+  let lastError = null
+  for (let attempt = 1; attempt <= retries; attempt += 1) {
+    try {
+      const response = await fetch(url, { method: 'GET' })
+      if (response.ok) {
+        const body = await response.text()
+        console.log(`[health] ok on attempt ${attempt}: ${body}`)
+        return
+      }
+      lastError = new Error(`status=${response.status}`)
+    }
+    catch (error) {
+      lastError = error
+    }
+
+    await delay(intervalMs)
   }
-  catch (error) {
-    console.warn('[warn] unable to read package.json scripts:', error instanceof Error ? error.message : String(error))
-    return {}
-  }
-}
 
-function npmCommand() {
-  return process.platform === 'win32' ? 'npm.cmd' : 'npm'
-}
-
-function pythonCommand() {
-  return process.platform === 'win32' ? 'python.exe' : 'python'
-}
-
-async function runLocalFlow(command, env, options = {}) {
-  await run(npmCommand(), ['run', `local:${command}`], { env, ...options })
+  throw new Error(`health check failed after ${retries} attempts: ${String(lastError)}`)
 }
 
 async function dumpDockerStatus(env) {
@@ -124,12 +91,6 @@ async function main() {
   }
 
   const skipE2E = args.has('--skip-e2e')
-  const npmScripts = await readPackageScripts()
-  const hasUnitScript = typeof npmScripts['test:unit'] === 'string'
-  const hasE2EScript = typeof npmScripts['test:e2e'] === 'string'
-  const hasLocalUp = typeof npmScripts['local:up'] === 'string'
-  const hasLocalCheck = typeof npmScripts['local:check'] === 'string'
-  const hasLocalDown = typeof npmScripts['local:down'] === 'string'
   const smokeAppPort = process.env.SMOKE_APP_PORT ?? '18001'
   const smokeDatabaseUrl = process.env.SMOKE_DATABASE_URL ?? 'sqlite+aiosqlite:///./data/release_smoke.db'
   const dockerEnv = {
@@ -137,50 +98,39 @@ async function main() {
     APP_HOST_PORT: smokeAppPort,
     DATABASE_URL: smokeDatabaseUrl,
   }
+  const healthUrl = `http://127.0.0.1:${smokeAppPort}/api/health`
   let dockerStarted = false
 
   try {
-    if (!hasLocalUp || !hasLocalCheck || !hasLocalDown) {
-      throw new Error('missing required npm scripts: local:up/local:check/local:down')
-    }
-
     console.log('\n[1/6] Running backend tests')
-    await run(pythonCommand(), ['-m', 'pytest', '-q'])
+    await run('python', ['-m', 'pytest', '-q'])
 
-    if (hasUnitScript) {
-      console.log('\n[2/6] Running frontend unit tests')
-      await run(npmCommand(), ['run', 'test:unit'])
-    }
-    else {
-      console.log('\n[2/6] Skipped frontend unit tests (missing npm script: test:unit)')
-    }
+    console.log('\n[2/6] Running frontend unit tests')
+    await run(process.platform === 'win32' ? 'npm.cmd' : 'npm', ['run', 'test:unit'])
 
     if (skipE2E) {
       console.log('\n[3/6] Skipped E2E tests (--skip-e2e)')
     }
-    else if (!hasE2EScript) {
-      console.log('\n[3/6] Skipped E2E tests (missing npm script: test:e2e)')
-    }
     else {
       console.log('\n[3/6] Running frontend E2E tests')
-      await run(npmCommand(), ['run', 'test:e2e'])
+      await run(process.platform === 'win32' ? 'npm.cmd' : 'npm', ['run', 'test:e2e'])
     }
 
+    console.log('\n[4/6] Starting Docker services (app + qdrant)')
+    await run('docker', ['compose', 'up', '--build', '-d', 'app', 'qdrant'], { env: dockerEnv })
     dockerStarted = true
-    console.log('\n[4/6] Starting local docker flow (npm run local:up)')
-    await runLocalFlow('up', dockerEnv)
 
-    console.log('\n[5/6] Checking backend health via local flow (npm run local:check)')
+    console.log('\n[5/6] Checking backend health')
     try {
-      await runLocalFlow('check', dockerEnv)
+      await waitForHealth(healthUrl)
     }
     catch (error) {
       await dumpDockerStatus(dockerEnv)
       throw error
     }
 
-    console.log('\n[6/6] Stopping local docker flow (npm run local:down)')
-    await runLocalFlow('down', dockerEnv)
+    console.log('\n[6/6] Stopping Docker services')
+    await run('docker', ['compose', 'down'], { env: dockerEnv })
 
     console.log('\nRelease smoke completed successfully.')
   }
@@ -188,8 +138,8 @@ async function main() {
     console.error('\nRelease smoke failed:', error instanceof Error ? error.message : String(error))
     if (dockerStarted) {
       try {
-        console.log('\n[cleanup] npm run local:down')
-        await runLocalFlow('down', dockerEnv)
+        console.log('\n[cleanup] docker compose down')
+        await run('docker', ['compose', 'down'], { env: dockerEnv })
       }
       catch (cleanupError) {
         console.error('[cleanup] failed:', cleanupError instanceof Error ? cleanupError.message : String(cleanupError))
