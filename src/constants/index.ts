@@ -6,6 +6,15 @@ import type { AppSettings } from '../types/settings'
 
 export const APP_NAME = 'AI 伙伴'
 
+export const TERMS = {
+  skill: 'Skill',
+  skills: 'Skills',
+  toolCall: 'Tool Call',
+  enableToolCall: 'Enable Tool Call',
+  fallbackChineseSkill: '技能',
+  fallbackChineseToolCall: '工具调用',
+} as const
+
 export const PROVIDER_LABELS: Record<ProviderType, string> = {
   'openai-compatible': 'OpenAI 兼容',
   'anthropic': 'Anthropic',

@@ -21,6 +21,7 @@ import { Badge } from '@/components/ui/badge'
 import { Switch } from '@/components/ui/switch'
 import { Label } from '@/components/ui/label'
 import { Separator } from '@/components/ui/separator'
+import { TERMS } from '@/constants'
 
 const ICON_MAP: Record<string, LucideIcon> = {
   'mdi:web': Globe,
@@ -142,9 +143,9 @@ export function SkillDetailDialog({
           {/* Enable/Disable Toggle */}
           <div className="flex items-center justify-between">
             <div>
-              <Label className="text-sm font-medium">启用 Skill</Label>
+              <Label className="text-sm font-medium">启用 {TERMS.skill}</Label>
               <p className="text-xs text-(--color-muted-foreground)">
-                {skill.enabled ? '该 Skill 已启用' : '该 Skill 已停用'}
+                {skill.enabled ? `该 ${TERMS.skill} 已启用` : `该 ${TERMS.skill} 已停用`}
               </p>
             </div>
             <Switch

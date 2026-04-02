@@ -29,6 +29,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from '@/components/ui/tooltip'
+import { TERMS } from '@/constants'
 
 interface MessageBubbleProps {
   message: Message
@@ -162,7 +163,7 @@ export function MessageBubble({ message, layoutMode }: MessageBubbleProps) {
           <CollapsibleTrigger asChild>
             <button className="flex items-center gap-2 rounded-lg border border-(--color-border) bg-(--color-card) px-3 py-2 text-sm hover:bg-(--color-accent) transition-colors w-full text-left">
               <Wrench className="h-4 w-4 text-(--color-muted-foreground) shrink-0" />
-              <span className="font-medium truncate">{message.toolName || '工具调用'}</span>
+              <span className="font-medium truncate">{message.toolName || TERMS.toolCall}</span>
               <ToolStatusBadge status={message.toolStatus} />
             </button>
           </CollapsibleTrigger>
