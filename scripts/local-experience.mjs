@@ -168,6 +168,20 @@ function npmCommand() {
   return process.platform === 'win32' ? 'npm.cmd' : 'npm'
 }
 
+async function cleanupWindowsDesktopProcess() {
+  if (process.platform !== 'win32') {
+    return
+  }
+
+  try {
+    await run('taskkill', ['/IM', 'agent-live2d.exe', '/F'], { stdio: 'ignore' })
+    console.log('[local] cleaned stale process: agent-live2d.exe')
+  }
+  catch {
+    // Ignore when process does not exist.
+  }
+}
+
 async function main() {
   const subcommand = process.argv[2]
   const dockerEnv = buildDockerEnv()
@@ -192,6 +206,7 @@ async function main() {
       await runWithDocker(npmCommand(), ['run', 'dev'])
       return
     case 'desktop':
+      await cleanupWindowsDesktopProcess()
       await runWithDocker(npmCommand(), ['run', 'tauri:dev'])
       return
     default:
