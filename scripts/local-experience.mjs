@@ -182,6 +182,30 @@ async function cleanupWindowsDesktopProcess() {
   }
 }
 
+async function cleanupWindowsPortConflict(port) {
+  if (process.platform !== 'win32') {
+    return
+  }
+
+  const script = [
+    '$connections = Get-NetTCPConnection -LocalPort ' + String(port) + " -State Listen -ErrorAction SilentlyContinue",
+    'if ($null -eq $connections) { exit 0 }',
+    '$procIds = $connections | Select-Object -ExpandProperty OwningProcess -Unique',
+    'foreach ($procId in $procIds) {',
+    '  try { Stop-Process -Id $procId -Force -ErrorAction Stop; Write-Output "killed-listener:' + String(port) + ':$procId" }',
+    '  catch { }',
+    '}',
+  ].join('; ')
+
+  try {
+    await run('powershell', ['-NoProfile', '-Command', script], { stdio: 'ignore' })
+    console.log(`[local] cleaned stale listeners on port ${port}`)
+  }
+  catch {
+    // Ignore if cleanup command fails or nothing to clean.
+  }
+}
+
 async function main() {
   const subcommand = process.argv[2]
   const dockerEnv = buildDockerEnv()
@@ -203,10 +227,12 @@ async function main() {
       await checkBackend(dockerEnv)
       return
     case 'web':
+      await cleanupWindowsPortConflict(1420)
       await runWithDocker(npmCommand(), ['run', 'dev'])
       return
     case 'desktop':
       await cleanupWindowsDesktopProcess()
+      await cleanupWindowsPortConflict(1420)
       await runWithDocker(npmCommand(), ['run', 'tauri:dev'])
       return
     default:
