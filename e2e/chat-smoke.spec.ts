@@ -221,7 +221,8 @@ test.describe('Chat Smoke E2E', () => {
     await page.getByRole('button', { name: '发送消息' }).click()
     await fallbackPostPromise
 
-    await expect(page.getByText('已切换为普通发送模式', { exact: false })).toBeVisible()
+    const fallbackModeToast = page.getByText('已切换为普通发送模式', { exact: false })
+    await expect(fallbackModeToast.first()).toBeVisible()
     await expect(page.getByText('待机中')).toBeVisible()
     await page.unroute('**/api/conversations/*/messages/stream')
   })
