@@ -376,4 +376,42 @@ test.describe('Chat Smoke E2E', () => {
     await expect(page.getByRole('heading', { name: titleA })).toBeVisible()
     await expect(composer).toHaveValue(draftA)
   })
+
+  test('background overlay opacity saves to backend and restores after refresh', async ({ page }) => {
+    await page.goto('/settings')
+
+    const overlaySection = page.locator('div.space-y-3').filter({ hasText: '遮罩透明度' }).first()
+    await expect(overlaySection).toBeVisible()
+
+    const overlaySlider = overlaySection.getByRole('slider')
+    await expect(overlaySlider).toBeVisible()
+    await overlaySlider.focus()
+    await overlaySlider.press('Home')
+    for (let index = 0; index < 14; index += 1) {
+      await overlaySlider.press('ArrowRight')
+    }
+
+    await expect(overlaySection.getByText('0.70')).toBeVisible()
+
+    await expect.poll(async () => {
+      const response = await page.request.get(`${apiBase}/settings`)
+      if (!response.ok()) {
+        return -1
+      }
+      const payload = await response.json() as ApiEnvelope<{ backgroundOverlayOpacity: number }>
+      return Number(payload.data.backgroundOverlayOpacity.toFixed(2))
+    }).toBe(0.7)
+
+    await page.reload()
+    const overlaySectionAfterReload = page.locator('div.space-y-3').filter({ hasText: '遮罩透明度' }).first()
+    await expect(overlaySectionAfterReload.getByText('0.70')).toBeVisible()
+
+    const overlayFromLocalStorage = await page.evaluate(() => {
+      const raw = localStorage.getItem('agent-live2d-settings')
+      if (!raw) return -1
+      const parsed = JSON.parse(raw) as { backgroundOverlayOpacity?: number }
+      return Number((parsed.backgroundOverlayOpacity ?? -1).toFixed(2))
+    })
+    expect(overlayFromLocalStorage).toBe(0.7)
+  })
 })
