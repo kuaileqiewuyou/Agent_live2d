@@ -26,10 +26,8 @@
     "local:web": "node scripts/local-experience.mjs web",
     "local:desktop": "node scripts/local-experience.mjs desktop",
     "desktop:doctor": "node scripts/desktop-doctor.mjs",
-    "smoke:release": "node scripts/release-smoke.mjs",
     "tauri:dev": "tauri dev",
-    "tauri:build": "tauri build",
-    "test:e2e": "playwright test"
+    "tauri:build": "tauri build"
   },
   "dependencies": {
     "@hookform/resolvers": "^5.2.2",
@@ -71,7 +69,6 @@
     "@tailwindcss/vite": "^4.2.2",
     "@testing-library/react": "^16.3.2",
     "@testing-library/user-event": "^14.6.1",
-    "@playwright/test": "^1.54.2",
     "@types/node": "^24.12.0",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
