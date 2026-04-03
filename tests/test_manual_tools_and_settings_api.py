@@ -1,3 +1,7 @@
+import os
+from pathlib import Path
+
+
 def _bootstrap_tool_enabled_conversation(client):
     persona = client.post(
         "/api/personas",
@@ -189,6 +193,34 @@ def test_settings_get_patch_roundtrip(client):
     assert data["backgroundBlur"] == 6
     assert data["backgroundOverlayOpacity"] == 0.2
     assert data["defaultLayoutMode"] == "companion"
+
+
+def test_settings_recover_from_corrupted_file_and_patch_success(client):
+    data_dir = Path(os.environ["DATA_DIR"])
+    settings_file = data_dir / "app_settings.json"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    settings_file.write_text('{"theme":"dark"}\n{"broken":true}', encoding="utf-8")
+
+    recovered = client.get("/api/settings")
+    assert recovered.status_code == 200
+    recovered_data = recovered.json()["data"]
+    assert recovered_data["theme"] == "system"
+
+    corrupted_backups = list(data_dir.glob("app_settings.corrupt-*.json"))
+    assert corrupted_backups
+
+    patch = client.patch(
+        "/api/settings",
+        json={
+            "backgroundOverlayOpacity": 0.65,
+            "backgroundBlur": 8,
+        },
+    )
+    assert patch.status_code == 200
+
+    data = client.get("/api/settings").json()["data"]
+    assert data["backgroundOverlayOpacity"] == 0.65
+    assert data["backgroundBlur"] == 8
 
 
 def test_regenerate_without_user_message_returns_400(client):
