@@ -25,7 +25,10 @@ import { useConversationStore, useNotificationStore } from '@/stores'
 import type {
   ChatLayoutMode,
   Conversation,
+  Live2DState,
   LongTermMemory,
+  ManualToolFailureHint,
+  ManualToolInputParams,
   ManualToolRequest,
   MCPServer,
   Message,
@@ -39,7 +42,12 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { handleStreamFailure } from '@/pages/chat/streamFailureHandler'
-import { deriveToolUsage, type StreamToolResultMeta } from '@/pages/chat/toolUsage'
+import { deriveToolUsage, normalizeToolLabel, type StreamToolResultMeta } from '@/pages/chat/toolUsage'
+import { canRegenerateFromMessages } from '@/pages/chat/regenerateState'
+import { mergeTransientTurnMessages } from '@/pages/chat/transientTurn'
+import { ApiRequestError } from '@/api/errors'
+import { parseManualToolBackendValidationIssues } from '@/components/chat/toolDraft'
+import { isMemoryVectorFallbackError } from '@/utils/memory-fallback'
 
 const ConversationSettingsDialog = lazy(async () => {
   const module = await import('@/components/chat/ConversationSettingsDialog')
@@ -55,11 +63,135 @@ interface MemoryActionFeedback {
 
 const CONVERSATION_META_UPDATED_EVENT = 'conversation-meta-updated'
 
+function isExpectedUserInputError(error: unknown) {
+  if (error instanceof ApiRequestError) {
+    if (error.code === 'validation_error') return true
+    if (error.status === 422) return true
+  }
+
+  if (!(error instanceof Error)) return false
+  const message = error.message.trim().toLowerCase()
+  if (!message) return false
+
+  return ['invalid params', 'validation', 'unprocessable', 'should be a'].some(keyword => message.includes(keyword))
+}
+
+function extractManualToolValidationMessage(error: unknown): string | null {
+  if (!(error instanceof Error)) return null
+  const message = error.message.trim()
+  if (!message) return null
+  return parseManualToolBackendValidationIssues(message).length > 0 ? message : null
+}
+
 function formatShortTime(value: string) {
   return new Date(value).toLocaleTimeString('zh-CN', {
     hour: '2-digit',
     minute: '2-digit',
   })
+}
+
+interface AssistantToolResultMeta {
+  type?: 'skill' | 'mcp'
+  name?: string
+  label?: string
+  title?: string
+  summary?: string
+  result?: string
+  error?: boolean | string
+  manual?: boolean
+  inputText?: string
+  inputParams?: Record<string, unknown>
+}
+
+interface AssistantManualToolRequestMeta {
+  type?: 'skill' | 'mcp'
+  targetId?: string
+  label?: string
+  inputText?: string
+  inputParams?: Record<string, unknown>
+}
+
+function normalizeInputParams(raw: unknown): ManualToolInputParams | undefined {
+  if (!raw || typeof raw !== 'object') return undefined
+  const record = raw as Record<string, unknown>
+  const next: ManualToolInputParams = {}
+  for (const [key, value] of Object.entries(record)) {
+    if (typeof value === 'string' && value.trim()) {
+      next[key] = value.trim()
+    }
+  }
+  return Object.keys(next).length > 0 ? next : undefined
+}
+
+function toFailureReason(result: AssistantToolResultMeta): ManualToolFailureHint['reason'] {
+  const summaryText = `${result.summary || ''} ${result.result || ''} ${typeof result.error === 'string' ? result.error : ''}`.toLowerCase()
+  if (summaryText.includes('未在当前会话启用') || summaryText.includes('not enabled')) return 'not_enabled'
+  if (summaryText.includes('invalid params') || summaryText.includes('validation')) return 'invalid_params'
+  if (summaryText.includes('超时') || summaryText.includes('timeout') || summaryText.includes('连接') || summaryText.includes('error') || summaryText.includes('失败')) {
+    return 'execution_error'
+  }
+  return 'unknown'
+}
+
+function isFailedManualToolResult(result: AssistantToolResultMeta) {
+  if (!result.manual) return false
+  if (result.error === true) return true
+  if (typeof result.error === 'string' && result.error.trim()) return true
+
+  const text = `${result.summary || ''} ${result.result || ''}`.toLowerCase()
+  return ['失败', 'error', 'not enabled', '未在当前会话启用', 'invalid params', 'validation'].some(keyword => text.includes(keyword))
+}
+
+function deriveRecentToolFailures(messages: Message[]): ManualToolFailureHint[] {
+  const latestAssistant = [...messages].reverse().find(message => {
+    if (message.role !== 'assistant') return false
+    const toolResults = message.metadata?.toolResults
+    return Array.isArray(toolResults) && toolResults.length > 0
+  })
+  if (!latestAssistant) return []
+
+  const rawToolResults = Array.isArray(latestAssistant.metadata?.toolResults)
+    ? latestAssistant.metadata?.toolResults as AssistantToolResultMeta[]
+    : []
+  const failedResults = rawToolResults.filter(isFailedManualToolResult)
+  if (failedResults.length === 0) return []
+
+  const rawManualRequests = Array.isArray(latestAssistant.metadata?.manualToolRequests)
+    ? latestAssistant.metadata?.manualToolRequests as AssistantManualToolRequestMeta[]
+    : []
+  const requestByLabel = new Map(
+    rawManualRequests
+      .filter(item => Boolean(item?.label))
+      .map(item => [normalizeToolLabel(item.label || ''), item] as const),
+  )
+
+  const failures: ManualToolFailureHint[] = []
+  for (const result of failedResults) {
+    const normalizedLabel = normalizeToolLabel(result.label || result.name || result.title || '')
+    if (!normalizedLabel) continue
+
+    const request = requestByLabel.get(normalizedLabel)
+    const type = result.type || request?.type
+    if (type !== 'skill' && type !== 'mcp') continue
+
+    failures.push({
+      type,
+      label: normalizedLabel,
+      ...(request?.targetId ? { targetId: request.targetId } : {}),
+      summary: result.summary || (typeof result.error === 'string' ? result.error : undefined),
+      reason: toFailureReason(result),
+      inputText: result.inputText || request?.inputText,
+      inputParams: normalizeInputParams(result.inputParams || request?.inputParams),
+    })
+  }
+
+  const seen = new Set<string>()
+  return failures.filter((item) => {
+    const key = `${item.type}:${item.targetId || item.label}`
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  }).slice(0, 3)
 }
 
 function EmptyConversation() {
@@ -150,8 +282,8 @@ function SessionOverview({
         {open && (
           <div className="grid gap-3 px-1.5 pt-2 md:grid-cols-[1.3fr,1fr,1fr,1fr,1.2fr]">
             <div className="min-w-0">
-              <div className="text-xs text-(--color-muted-foreground)">当前人设</div>
-              <div className="mt-1 truncate text-sm font-medium">{personaName || '未绑定人设'}</div>
+              <div className="text-xs text-(--color-muted-foreground)">当前 Persona</div>
+              <div className="mt-1 truncate text-sm font-medium">{personaName || '未绑定 Persona'}</div>
               <div className="mt-2 text-xs text-(--color-muted-foreground)">当前模型</div>
               <div className="mt-1 truncate text-sm">{modelName || '未绑定模型'}</div>
             </div>
@@ -341,6 +473,8 @@ export function ChatPage() {
   const [isSavingMemory, setIsSavingMemory] = useState(false)
   const [isDedupingMessages, setIsDedupingMessages] = useState(false)
   const [memoryFeedback, setMemoryFeedback] = useState<MemoryActionFeedback | null>(null)
+  const [backendToolValidationMessage, setBackendToolValidationMessage] = useState<string | null>(null)
+  const [live2dState, setLive2dState] = useState<Live2DState>('idle')
 
   const notifyConversationMetaUpdated = useCallback(() => {
     window.dispatchEvent(new CustomEvent(CONVERSATION_META_UPDATED_EVENT))
@@ -407,6 +541,8 @@ export function ChatPage() {
       setPersonaLive2dModel(undefined)
       setModelName(undefined)
       setMemoryFeedback(null)
+      setBackendToolValidationMessage(null)
+      setLive2dState('idle')
       return
     }
 
@@ -416,6 +552,7 @@ export function ChatPage() {
 
   const skillNames = useMemo(() => skills.map(skill => skill.name), [skills])
   const mcpNames = useMemo(() => mcpServers.map(server => server.name), [mcpServers])
+  const recentToolFailures = useMemo(() => deriveRecentToolFailures(messages), [messages])
 
   const runStreamingTurn = useCallback(async (
     content: string,
@@ -427,7 +564,9 @@ export function ChatPage() {
   ) => {
     if (!conversationId || isSending) return
 
+    setBackendToolValidationMessage(null)
     setIsSending(true)
+    setLive2dState('thinking')
     const nonce = Date.now()
     const turnRequestId = `turn-${conversationId}-${nonce}`
     const streamMetadata: Record<string, unknown> = {
@@ -467,9 +606,17 @@ export function ChatPage() {
       metadata: { transient: true, mode: options?.mode || 'send' },
     }
 
-    addMessage(tempUserMessage)
-    addMessage(createTransientMessage(conversationId, thinkingId, 'system', '正在分析你的问题...'))
-    addMessage(tempAssistantMessage)
+    const currentMessages = useConversationStore.getState().messages
+    setMessages(
+      mergeTransientTurnMessages(
+        currentMessages,
+        [
+          tempUserMessage,
+          createTransientMessage(conversationId, thinkingId, 'system', '正在分析你的问题...'),
+          tempAssistantMessage,
+        ],
+      ),
+    )
 
     try {
       await messageService.streamMessage(
@@ -557,6 +704,9 @@ export function ChatPage() {
               ),
             )
           },
+          onLive2dStateChange: (state) => {
+            setLive2dState(state)
+          },
           onToken: (token) => {
             const current = useConversationStore
               .getState()
@@ -613,7 +763,9 @@ export function ChatPage() {
       )
     }
     catch (streamError) {
-      await handleStreamFailure({
+      setLive2dState('error')
+      const failureOutcome = await handleStreamFailure({
+        streamError,
         streamAcceptedByServer,
         conversationId,
         nonce,
@@ -636,13 +788,35 @@ export function ChatPage() {
         pushNotification,
         fallbackMetadata: streamMetadata,
         onLoadConversationError: (error) => {
-          console.error('stream-interrupted refresh failed:', error)
+          if (import.meta.env.DEV) {
+            console.warn('stream-interrupted refresh failed:', error)
+          }
         },
       })
-      console.error('流式发送失败：', streamError)
+      if (failureOutcome === 'fallback-failed') {
+        if (isExpectedUserInputError(streamError)) {
+          const manualValidationMessage = extractManualToolValidationMessage(streamError)
+          if (manualValidationMessage) {
+            setBackendToolValidationMessage(manualValidationMessage)
+          }
+          if (import.meta.env.DEV) {
+            console.info('流式发送失败（输入校验类）：', streamError)
+          }
+        }
+        else {
+          console.error('流式发送失败：', streamError)
+        }
+      }
     }
     finally {
       setIsSending(false)
+      setLive2dState((current) => {
+        if (current === 'error') {
+          setTimeout(() => setLive2dState('idle'), 3000)
+          return current
+        }
+        return 'idle'
+      })
     }
   }, [addMessage, conversationId, isSending, loadConversation, personaName, pushNotification, setIsSending, setMessages, updateMessage])
 
@@ -662,10 +836,17 @@ export function ChatPage() {
     try {
       await messageService.stopMessage(conversationId)
     }
+    catch (error) {
+      pushNotification({
+        type: 'info',
+        title: '停止请求未送达',
+        description: error instanceof Error ? error.message : '已在本地停止等待，你可以稍后重试。',
+      })
+    }
     finally {
       setIsSending(false)
     }
-  }, [conversationId, setIsSending])
+  }, [conversationId, pushNotification, setIsSending])
 
   const handleRegenerate = useCallback(async () => {
     if (!conversationId || messages.length === 0) return
@@ -742,6 +923,14 @@ export function ChatPage() {
       notifyConversationMetaUpdated()
     }
     catch (error) {
+      if (isMemoryVectorFallbackError(error)) {
+        pushNotification({
+          type: 'info',
+          title: '记忆服务已降级',
+          description: '向量服务暂不可用，本轮聊天不受影响，你可以继续对话。',
+        })
+        return
+      }
       pushNotification({
         type: 'error',
         title: '生成摘要失败',
@@ -794,6 +983,14 @@ export function ChatPage() {
       notifyConversationMetaUpdated()
     }
     catch (error) {
+      if (isMemoryVectorFallbackError(error)) {
+        pushNotification({
+          type: 'info',
+          title: '记忆服务已降级',
+          description: '长期记忆写入向量索引暂不可用，但不影响继续聊天。',
+        })
+        return
+      }
       pushNotification({
         type: 'error',
         title: '写入长期记忆失败',
@@ -853,8 +1050,15 @@ export function ChatPage() {
     navigate(`/memory?${params.toString()}`)
   }, [conversation, navigate])
 
-  const lastMessage = messages[messages.length - 1]
-  const showRegenerate = lastMessage?.role === 'assistant' && lastMessage?.status === 'done'
+  const handleOpenToolRepairConversationSettings = useCallback(() => {
+    setSettingsOpen(true)
+  }, [])
+
+  const handleOpenToolRepairMcpCenter = useCallback(() => {
+    navigate('/mcp')
+  }, [navigate])
+
+  const showRegenerate = canRegenerateFromMessages(messages)
   const latestUserMessagePreview = useMemo(() => {
     const latestUserMessage = [...messages].reverse().find(message => message.role === 'user')
     if (!latestUserMessage) return null
@@ -932,7 +1136,7 @@ export function ChatPage() {
             isLoading={isLoadingMessages}
             live2dSlot={(
               <Live2DStage
-                state={isSending ? 'thinking' : 'idle'}
+                state={live2dState}
                 modelId={personaLive2dModel}
                 personaName={personaName}
                 openingMessage={personaOpeningMessage}
@@ -966,6 +1170,11 @@ export function ChatPage() {
                 mcpCount={conversation?.enabledMcpServerIds.length}
                 enabledSkills={skills}
                 enabledMcpServers={mcpServers}
+                recentToolFailures={recentToolFailures}
+                backendValidationMessage={backendToolValidationMessage}
+                onOpenConversationSettings={handleOpenToolRepairConversationSettings}
+                onOpenMcpCenter={handleOpenToolRepairMcpCenter}
+                isContextLoading={isLoadingMessages}
                 placeholder={personaOpeningMessage || '输入消息...'}
               />
             )}

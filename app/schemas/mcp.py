@@ -43,3 +43,4 @@ class MCPServerCheckResult(CamelModel):
     resource_count: int
     prompt_count: int
     detail: str
+    used_cache: bool = False

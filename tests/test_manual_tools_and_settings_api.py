@@ -223,13 +223,41 @@ def test_settings_recover_from_corrupted_file_and_patch_success(client):
     assert data["backgroundBlur"] == 8
 
 
-def test_regenerate_without_user_message_returns_400(client):
+def test_settings_patch_retries_replace_on_permission_error(client, monkeypatch):
+    original_replace = Path.replace
+    state = {"raised": 0}
+
+    def flaky_replace(self: Path, target):
+        if self.suffix == ".tmp" and state["raised"] == 0:
+            state["raised"] += 1
+            raise PermissionError("simulated lock")
+        return original_replace(self, target)
+
+    monkeypatch.setattr(Path, "replace", flaky_replace)
+
+    patch = client.patch(
+        "/api/settings",
+        json={
+            "theme": "dark",
+            "backgroundOverlayOpacity": 0.3,
+        },
+    )
+
+    assert patch.status_code == 200
+    assert state["raised"] == 1
+    data = client.get("/api/settings").json()["data"]
+    assert data["theme"] == "dark"
+    assert data["backgroundOverlayOpacity"] == 0.3
+
+
+def test_regenerate_without_user_message_returns_409(client):
     conversation_id, _, _ = _bootstrap_tool_enabled_conversation(client)
     regenerate = client.post(f"/api/conversations/{conversation_id}/messages/regenerate")
 
-    assert regenerate.status_code == 400
+    assert regenerate.status_code == 409
     payload = regenerate.json()
     assert payload["success"] is False
+    assert payload["data"]["code"] == "regenerate_not_available"
     assert "No user message found to regenerate" in payload["message"]
 
 def test_send_message_rejects_invalid_typed_manual_tool_params(client):
@@ -258,8 +286,17 @@ def test_send_message_rejects_invalid_typed_manual_tool_params(client):
     assert response.status_code == 422
     payload = response.json()
     assert payload["success"] is False
+    assert payload["data"]["code"] == "validation_error"
+    assert payload["data"]["source"] == "manual_tool_requests"
     assert "manualToolRequests[0] invalid params" in payload["message"]
     assert "budget should be a number" in payload["message"]
+    issues = payload["data"]["issues"]
+    assert isinstance(issues, list)
+    assert len(issues) == 1
+    assert issues[0]["path"] == "manualToolRequests[0].inputParams.budget"
+    assert issues[0]["field"] == "budget"
+    assert issues[0]["type"] == "type"
+    assert issues[0]["expected"] == "number"
 
     messages = client.get(f"/api/conversations/{conversation_id}/messages")
     assert messages.status_code == 200
@@ -293,6 +330,15 @@ def test_stream_message_rejects_invalid_typed_manual_tool_params(client):
     assert response.status_code == 422
     payload = response.json()
     assert payload["success"] is False
+    assert payload["data"]["code"] == "validation_error"
+    assert payload["data"]["source"] == "manual_tool_requests"
     assert "manualToolRequests[0] invalid params" in payload["message"]
     assert "includeRaw should be true/false" in payload["message"]
+    issues = payload["data"]["issues"]
+    assert isinstance(issues, list)
+    assert len(issues) == 1
+    assert issues[0]["path"] == "manualToolRequests[0].inputParams.includeRaw"
+    assert issues[0]["field"] == "includeRaw"
+    assert issues[0]["type"] == "type"
+    assert issues[0]["expected"] == "boolean"
 

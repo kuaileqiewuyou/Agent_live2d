@@ -1,4 +1,4 @@
-import type { ModelConfig } from '@/types'
+﻿import type { ModelConfig } from '@/types'
 import { apiRequest, isMockMode } from '@/api'
 import { mockModelConfigs } from '@/mock'
 import { generateId } from '@/utils'
@@ -27,7 +27,7 @@ async function getModelConfig(id: string): Promise<ModelConfig | undefined> {
 }
 
 async function createModelConfig(
-  data: Omit<ModelConfig, 'id' | 'createdAt' | 'updatedAt'>
+  data: Omit<ModelConfig, 'id' | 'createdAt' | 'updatedAt'>,
 ): Promise<ModelConfig> {
   if (isMockMode()) {
     const now = new Date().toISOString()
@@ -49,7 +49,7 @@ async function createModelConfig(
 
 async function updateModelConfig(
   id: string,
-  data: Partial<ModelConfig>
+  data: Partial<ModelConfig>,
 ): Promise<ModelConfig> {
   if (isMockMode()) {
     const index = modelConfigs.findIndex((m) => m.id === id)
@@ -83,8 +83,8 @@ async function deleteModelConfig(id: string): Promise<void> {
 }
 
 async function testConnection(
-  id: string
-): Promise<{ success: boolean; message: string }> {
+  id: string,
+): Promise<{ success: boolean, message: string }> {
   if (isMockMode()) {
     const config = modelConfigs.find((m) => m.id === id)
     if (!config) {
@@ -93,7 +93,7 @@ async function testConnection(
     await new Promise((resolve) => setTimeout(resolve, 1000))
     return { success: true, message: `成功连接到 ${config.name}` }
   }
-  const res = await apiRequest<{ ok: boolean; detail: string }>(
+  const res = await apiRequest<{ ok: boolean, detail: string }>(
     `/api/models/configs/${id}/test`,
     { method: 'POST' },
   )

@@ -1,4 +1,4 @@
-import type { MCPServer } from '@/types'
+﻿import type { MCPServer } from '@/types'
 import { apiRequest, isMockMode } from '@/api'
 import { mockMcpServers } from '@/mock'
 import { generateId } from '@/utils'
@@ -111,8 +111,8 @@ async function toggleMcpServer(id: string, enabled: boolean): Promise<MCPServer>
 }
 
 async function checkConnection(
-  id: string
-): Promise<{ success: boolean; message: string }> {
+  id: string,
+): Promise<{ success: boolean, message: string }> {
   if (isMockMode()) {
     const server = mcpServers.find((s) => s.id === id)
     if (!server) {
@@ -127,7 +127,7 @@ async function checkConnection(
     }
     return { success: true, message: `成功连接到 ${server.name}` }
   }
-  const res = await apiRequest<{ ok: boolean; detail: string }>(
+  const res = await apiRequest<{ ok: boolean, detail: string }>(
     `/api/mcp/servers/${id}/check`,
     { method: 'POST' },
   )

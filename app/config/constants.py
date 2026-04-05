@@ -7,7 +7,6 @@ PROVIDER_TYPES = [
 
 LAYOUT_MODES = ["chat", "companion"]
 
-LIVE2D_STATES = ["idle", "thinking", "speaking", "listening"]
+LIVE2D_STATES = ["idle", "thinking", "talking", "error"]
 
 MESSAGE_ROLES = ["user", "assistant", "system", "tool", "error"]
-

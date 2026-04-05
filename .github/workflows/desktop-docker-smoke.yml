@@ -5,7 +5,10 @@ on:
     paths:
       - "Dockerfile"
       - "docker-compose.yml"
+      - "scripts/dev-port-utils.mjs"
       - "scripts/local-experience.mjs"
+      - "scripts/startup-port-smoke.mjs"
+      - "scripts/tauri-dev-safe.mjs"
       - "src-tauri/**"
       - "src/**"
       - "package.json"
@@ -43,7 +46,10 @@ jobs:
             docker:
               - 'Dockerfile'
               - 'docker-compose.yml'
+              - 'scripts/dev-port-utils.mjs'
               - 'scripts/local-experience.mjs'
+              - 'scripts/startup-port-smoke.mjs'
+              - 'scripts/tauri-dev-safe.mjs'
               - 'pyproject.toml'
               - '.env.example'
 
@@ -71,6 +77,9 @@ jobs:
 
       - name: Build frontend dist (for Tauri)
         run: npm run build
+
+      - name: Run startup port fallback smoke
+        run: npm run smoke:startup
 
   docker_backend_smoke:
     runs-on: ubuntu-latest

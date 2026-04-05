@@ -1,12 +1,16 @@
 import { describe, expect, it } from 'vitest'
 import type { ManualToolRequest } from '@/types'
 import {
+  buildManualToolBackendValidationHint,
+  buildManualToolValidationErrorMessage,
   buildToolFallbackContent,
+  formatManualToolBackendValidationIssue,
   getComposerDraftForConversation,
   getInvalidTypedParams,
   getMissingRequiredParams,
   getToolDraftForConversation,
   hasToolParams,
+  parseManualToolBackendValidationIssues,
   persistComposerDraftForConversation,
   persistToolDraftForConversation,
   readComposerDraftMap,
@@ -177,5 +181,83 @@ describe('toolDraft helpers', () => {
     })
 
     expect(getInvalidTypedParams(request)).toEqual([])
+  })
+
+  it('builds backend-aligned validation error message', () => {
+    const request = createManualRequest({
+      inputParams: {
+        goal: '',
+        budget: 'abc',
+        includeRaw: 'maybe',
+        output: 'xml',
+      },
+      requiredFields: ['goal'],
+      fieldTypes: {
+        goal: 'string',
+        budget: 'number',
+        includeRaw: 'boolean',
+        output: 'enum',
+      },
+      fieldOptions: {
+        output: ['json', 'markdown'],
+      },
+    })
+
+    expect(buildManualToolValidationErrorMessage(request, 2)).toBe(
+      'manualToolRequests[2] invalid params: goal is required; budget should be a number; includeRaw should be true/false; output should be one of json, markdown',
+    )
+  })
+
+  it('returns null when request params are valid', () => {
+    const request = createManualRequest({
+      inputParams: {
+        goal: 'summarize',
+        budget: '12',
+        includeRaw: 'true',
+        output: 'json',
+      },
+      requiredFields: ['goal'],
+      fieldTypes: {
+        goal: 'string',
+        budget: 'number',
+        includeRaw: 'boolean',
+        output: 'enum',
+      },
+      fieldOptions: {
+        output: ['json', 'markdown'],
+      },
+    })
+
+    expect(buildManualToolValidationErrorMessage(request, 0)).toBeNull()
+  })
+
+  it('parses backend validation issues from manualToolRequests error payload', () => {
+    const issues = parseManualToolBackendValidationIssues(
+      'manualToolRequests[2] invalid params: goal is required; budget should be a number; includeRaw should be true/false; output should be one of json, markdown',
+    )
+
+    expect(issues).toEqual([
+      { requestIndex: 2, field: 'goal', code: 'required', raw: 'goal is required' },
+      { requestIndex: 2, field: 'budget', code: 'number', raw: 'budget should be a number' },
+      { requestIndex: 2, field: 'includeRaw', code: 'boolean', raw: 'includeRaw should be true/false' },
+      { requestIndex: 2, field: 'output', code: 'enum', detail: 'json, markdown', raw: 'output should be one of json, markdown' },
+    ])
+  })
+
+  it('formats backend validation issues to readable chinese hints', () => {
+    expect(formatManualToolBackendValidationIssue({
+      requestIndex: 0,
+      field: 'budget',
+      code: 'number',
+      raw: 'budget should be a number',
+    })).toBe('budget 需要 number 类型')
+  })
+
+  it('builds compact validation hint from backend error payload', () => {
+    const hint = buildManualToolBackendValidationHint(
+      'manualToolRequests[0] invalid params: goal is required; budget should be a number',
+    )
+
+    expect(hint).toBe('Tool #1 参数校验失败：goal 为必填项；budget 需要 number 类型')
   })
 })

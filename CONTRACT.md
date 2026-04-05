@@ -174,23 +174,31 @@
 
 返回类型：`text/event-stream`
 
-SSE 事件：
+SSE 事件（当前主链路）：
 
 - `message_created`
 - `thinking`
 - `tool_calling`
+- `tool_result`
+- `memory_sync`
 - `token`
 - `final_answer`
 - `stopped`
+
+核心事件 payload 字段约定：
+
+- `live2dState`：可选，取值为 `idle` / `thinking` / `talking` / `error`
+- 对于上述主链路事件，后端默认会附带 `live2dState`
+- 前端消费时若 payload 中存在 `live2dState`，应优先使用；仅在缺失时按 `event` 推断状态
 
 示例：
 
 ```text
 event: token
-data: {"content":"你好"}
+data: {"content":"你好","live2dState":"talking"}
 
 event: final_answer
-data: {"messageId":"uuid","content":"你好，我在。"}
+data: {"messageId":"uuid","content":"你好，我在。","live2dState":"idle"}
 ```
 
 ### `POST /api/conversations/{conversation_id}/messages/regenerate`
@@ -384,13 +392,13 @@ data: {"messageId":"uuid","content":"你好，我在。"}
 }
 ```
 
-## 11. Message Cleanup
+## 11. 消息去重清理
 
 ### `POST /api/conversations/{conversation_id}/messages/dedupe`
 
-Use this endpoint to remove obvious duplicate turns inside one conversation history.
+用于清理同一会话历史中的明显重复轮次。
 
-Response example:
+返回示例：
 
 ```json
 {
@@ -405,3 +413,18 @@ Response example:
   }
 }
 ```
+
+## 12. 请求幂等（`metadata.requestId`）
+
+对于以下两个接口，客户端可以传入 `metadata.requestId`（字符串）：
+
+- `POST /api/conversations/{conversation_id}/messages`
+- `POST /api/conversations/{conversation_id}/messages/stream`
+
+行为约定：
+
+- 同一会话内重复提交相同 `requestId` 时，后端必须复用同一轮 user/assistant 结果，不再创建重复轮次。
+- 若第一次请求仍在处理中，后端可返回 `409`，错误码为 `request_in_progress`。
+- 推荐客户端行为：
+  - 一次用户轮次固定使用一个 `requestId`
+  - 当 stream 回退到非 stream 发送时，复用同一个 `requestId`

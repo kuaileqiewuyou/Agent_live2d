@@ -66,7 +66,7 @@ def _build_manual_skill_result(request: dict, skill: dict | None, user_input: st
             "label": label,
             "title": f"Skill: {label}",
             "summary": f"用户手动触发了 Skill「{label}」。输入：{input_text}",
-            "result": f"Skill「{label}」已执行完成，请结合用户请求综合回答。",
+            "result": f"Skill「{label}」已执行完成，请结合用户请求给出综合回答。",
             "manual": True,
             "inputText": input_text,
             "inputParams": request.get("input_params", {}),
@@ -92,9 +92,9 @@ def _build_manual_mcp_result(request: dict, server: dict | None, user_input: str
             "type": "mcp",
             "name": server["name"],
             "label": label,
-            "title": f"MCP：{label}",
+            "title": f"MCP: {label}",
             "summary": f"用户手动触发了 MCP 服务「{label}」（状态：{server['status']}）。输入：{input_text}",
-            "result": f"MCP 服务「{label}」已返回结果，请结合用户请求综合回答。",
+            "result": f"MCP 服务「{label}」已返回结果，请结合用户请求给出综合回答。",
             "manual": True,
             "inputText": input_text,
             "inputParams": request.get("input_params", {}),
@@ -104,7 +104,7 @@ def _build_manual_mcp_result(request: dict, server: dict | None, user_input: str
         "type": "mcp",
         "name": label,
         "label": label,
-        "title": f"MCP：{label}",
+        "title": f"MCP: {label}",
         "summary": f"当前会话不可用 MCP 服务「{label}」。",
         "result": f"MCP 服务「{label}」未在当前会话启用。",
         "manual": True,
@@ -175,7 +175,7 @@ async def tool_agent(state):
                 "type": "mcp",
                 "name": server["name"],
                 "label": server["name"],
-                "title": f"MCP：{server['name']}",
+                "title": f"MCP: {server['name']}",
                 "summary": f"MCP 服务「{server['name']}」当前状态：{server['status']}",
                 "result": f"MCP 服务「{server['name']}」当前状态：{server['status']}",
                 "manual": False,
@@ -214,4 +214,3 @@ async def memory_agent(state):
             }
         ]
     }
-

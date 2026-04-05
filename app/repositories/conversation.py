@@ -1,4 +1,4 @@
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import selectinload
 
 from app.db.models import Conversation
@@ -43,3 +43,17 @@ class ConversationRepository(SQLAlchemyRepository[Conversation]):
             raise NotFoundError("conversation")
         return conversation
 
+    async def count_by_persona_id(self, persona_id: str) -> int:
+        result = await self.session.execute(
+            select(func.count(Conversation.id)).where(Conversation.persona_id == persona_id)
+        )
+        return int(result.scalar_one())
+
+    async def list_titles_by_persona_id(self, persona_id: str, limit: int = 3) -> list[str]:
+        result = await self.session.execute(
+            select(Conversation.title)
+            .where(Conversation.persona_id == persona_id)
+            .order_by(Conversation.updated_at.desc())
+            .limit(limit)
+        )
+        return [title for title in result.scalars().all() if title]

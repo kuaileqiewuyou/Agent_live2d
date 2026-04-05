@@ -1,4 +1,5 @@
 from http import HTTPStatus
+from typing import Any
 
 
 class AppError(Exception):
@@ -8,11 +9,13 @@ class AppError(Exception):
         *,
         status_code: int = HTTPStatus.BAD_REQUEST,
         code: str = "app_error",
+        details: dict[str, Any] | None = None,
     ) -> None:
         super().__init__(message)
         self.message = message
         self.status_code = status_code
         self.code = code
+        self.details = details or {}
 
 
 class NotFoundError(AppError):
@@ -27,4 +30,3 @@ class NotFoundError(AppError):
 class ConflictError(AppError):
     def __init__(self, message: str) -> None:
         super().__init__(message, status_code=HTTPStatus.CONFLICT, code="conflict")
-

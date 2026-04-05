@@ -1,6 +1,5 @@
-import { normalizeRequestError } from '@/api'
-import type { ChatTurn, ManualToolInputParams, ManualToolRequest, Message, MessageAttachment } from '@/types'
-import { apiRequest, isMockMode } from '@/api'
+﻿import { apiRequest, isMockMode, normalizeRequestError, parseApiError, API_BASE_URL } from '@/api'
+import type { ChatTurn, Live2DState, ManualToolInputParams, ManualToolRequest, Message, MessageAttachment } from '@/types'
 import { mockMessages } from '@/mock'
 import { generateId } from '@/utils'
 
@@ -161,16 +160,16 @@ async function streamMessage(
     onToolResult?: (payload: StreamToolResult) => void
     onMemorySync?: (payload: { requested?: boolean, message?: string }) => void
     onToken?: (token: string) => void
+    onLive2dStateChange?: (state: Live2DState) => void
     onFinalAnswer?: (payload: StreamFinalAnswerPayload) => void
     onStopped?: () => void
   },
   options: StreamMessageOptions = {},
 ): Promise<void> {
-  const baseUrl = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
   let hasTerminalEvent = false
 
   try {
-    const response = await fetch(`${baseUrl}/api/conversations/${conversationId}/messages/stream`, {
+    const response = await fetch(`${API_BASE_URL}/api/conversations/${conversationId}/messages/stream`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -181,7 +180,11 @@ async function streamMessage(
       }),
     })
 
-    if (!response.ok || !response.body) {
+    if (!response.ok) {
+      throw await parseApiError(response)
+    }
+
+    if (!response.body) {
       throw new Error(`流式请求失败：${response.status} ${response.statusText}`)
     }
 
@@ -210,12 +213,18 @@ async function streamMessage(
         if (!eventName || !dataPayload) continue
 
         const payload = JSON.parse(dataPayload)
+        const live2dState = payload.live2dState as Live2DState | undefined
+        if (live2dState) {
+          handlers.onLive2dStateChange?.(live2dState)
+        }
         switch (eventName) {
           case 'message_created':
             handlers.onMessageCreated?.(payload.userMessageId)
+            if (!live2dState) handlers.onLive2dStateChange?.('thinking')
             break
           case 'thinking':
             handlers.onThinking?.(payload)
+            if (!live2dState) handlers.onLive2dStateChange?.('thinking')
             break
           case 'tool_calling':
             handlers.onToolCalling?.(payload)
@@ -228,9 +237,11 @@ async function streamMessage(
             break
           case 'token':
             handlers.onToken?.(payload.content || '')
+            if (!live2dState) handlers.onLive2dStateChange?.('talking')
             break
           case 'final_answer':
             hasTerminalEvent = true
+            if (!live2dState) handlers.onLive2dStateChange?.('idle')
             handlers.onFinalAnswer?.({
               messageId: payload.messageId,
               content: payload.content || '',
@@ -240,6 +251,7 @@ async function streamMessage(
             break
           case 'stopped':
             hasTerminalEvent = true
+            if (!live2dState) handlers.onLive2dStateChange?.('idle')
             handlers.onStopped?.()
             break
         }

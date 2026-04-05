@@ -22,16 +22,21 @@ function CompanionSpeechBubble({ messages }: { messages: Message[] }) {
 
   if (!lastAssistant) return null
 
+  const isStreaming = lastAssistant.status === 'streaming'
+
   return (
-    <div className="absolute left-[38%] top-6 z-10 max-h-[60%] max-w-md">
-      <div className="relative">
-        <div className="max-h-[55vh] overflow-y-auto rounded-2xl border border-(--color-border) bg-(--color-card) px-5 py-4 text-sm leading-relaxed shadow-lg">
-          <div className="prose prose-sm max-w-none break-words dark:prose-invert">
-            {lastAssistant.content}
-          </div>
+    <div className="relative max-w-md shrink-0">
+      <div
+        className={cn(
+          'max-h-[45vh] overflow-y-auto rounded-2xl border bg-(--color-card) px-5 py-4 text-sm leading-relaxed shadow-lg',
+          isStreaming ? 'border-(--color-primary)/30' : 'border-(--color-border)',
+        )}
+      >
+        <div className="prose prose-sm max-w-none break-words dark:prose-invert">
+          {lastAssistant.content || '...'}
         </div>
-        <div className="absolute -left-2 bottom-4 h-4 w-4 rotate-45 border-b border-l border-(--color-border) bg-(--color-card)" />
       </div>
+      <div className="absolute -left-2 bottom-4 h-4 w-4 rotate-45 border-b border-l border-(--color-border) bg-(--color-card)" />
     </div>
   )
 }
@@ -68,15 +73,22 @@ export function ChatLayout({
     )
   }
 
+  /* ---- companion mode ---- */
   return (
     <div className="relative flex h-full min-w-0 flex-1 flex-col">
-      <div className="relative flex-1 overflow-hidden">
-        <div className="absolute inset-0 flex items-center justify-start pl-[10%]">
+      {/* main area: live2d + bubble, flex-based stable layout */}
+      <div className="relative flex min-h-0 flex-1 items-end gap-4 overflow-hidden px-6 pb-2 pt-14">
+        {/* live2d character — fixed width, anchored to bottom */}
+        <div className="flex h-full w-[clamp(200px,35%,400px)] shrink-0 items-end justify-center">
           {live2dSlot}
         </div>
 
-        <CompanionSpeechBubble messages={messages} />
+        {/* speech bubble — fills remaining space */}
+        <div className="flex min-w-0 flex-1 items-start pt-8">
+          <CompanionSpeechBubble messages={messages} />
+        </div>
 
+        {/* history toggle */}
         <Button
           variant="outline"
           size="sm"
@@ -90,9 +102,10 @@ export function ChatLayout({
           聊天记录
         </Button>
 
+        {/* history overlay panel */}
         <div
           className={cn(
-            'absolute left-4 top-4 z-30 flex w-[360px] flex-col rounded-2xl border border-(--color-border) bg-(--color-background)/95 shadow-xl backdrop-blur-md transition-all duration-200',
+            'absolute left-4 top-4 z-30 flex w-[360px] max-w-[calc(100%-2rem)] flex-col rounded-2xl border border-(--color-border) bg-(--color-background)/95 shadow-xl backdrop-blur-md transition-all duration-200',
             historyOpen
               ? 'h-[70%] translate-y-0 opacity-100'
               : 'pointer-events-none h-0 -translate-y-2 opacity-0',

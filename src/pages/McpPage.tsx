@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Plus, Server } from 'lucide-react'
 import type { MCPServer } from '@/types'
 import { mcpService } from '@/services'
@@ -9,23 +9,163 @@ import { ScrollArea } from '@/components/ui/scroll-area'
 import { McpServerCard } from '@/features/mcp/McpServerCard'
 import { McpServerDialog } from '@/features/mcp/McpServerDialog'
 
+const MCP_AUTO_CHECK_POLL_MS = 30000
+
 export function McpPage() {
   const [servers, setServers] = useState<MCPServer[]>([])
   const [dialogOpen, setDialogOpen] = useState(false)
   const [checkingIds, setCheckingIds] = useState<Set<string>>(new Set())
+  const [loading, setLoading] = useState(true)
   const pushNotification = useNotificationStore((state) => state.push)
+  const serversRef = useRef<MCPServer[]>([])
+  const autoCheckInFlightRef = useRef(false)
 
   useEffect(() => {
-    mcpService.getMcpServers()
-      .then(setServers)
-      .catch((error) => {
+    serversRef.current = servers
+  }, [servers])
+
+  const setCheckingState = useCallback((id: string, checking: boolean) => {
+    setCheckingIds((prev) => {
+      const next = new Set(prev)
+      if (checking) {
+        next.add(id)
+      }
+      else {
+        next.delete(id)
+      }
+      return next
+    })
+  }, [])
+
+  const loadServers = useCallback(async (options: { notifyOnError?: boolean } = {}) => {
+    try {
+      const allServers = await mcpService.getMcpServers()
+      setServers(allServers)
+      return allServers
+    }
+    catch (error) {
+      if (options.notifyOnError !== false) {
         pushNotification({
           type: 'error',
           title: '加载 MCP 服务失败',
           description: error instanceof Error ? error.message : '请稍后再试。',
         })
-      })
+      }
+      return null
+    }
   }, [pushNotification])
+
+  const checkConnection = useCallback(async (
+    id: string,
+    options: {
+      notifyResult?: boolean
+      notifyError?: boolean
+      refreshAfter?: boolean
+    } = {},
+  ) => {
+    setCheckingState(id, true)
+    try {
+      const result = await mcpService.checkConnection(id)
+      if (options.notifyResult !== false) {
+        pushNotification({
+          type: result.success ? 'success' : 'error',
+          title: result.success ? '连接检查完成' : '连接检查失败',
+          description: result.message,
+        })
+      }
+      return result
+    }
+    catch (error) {
+      if (options.notifyError !== false) {
+        pushNotification({
+          type: 'error',
+          title: '连接检查失败',
+          description: error instanceof Error ? error.message : '请稍后再试。',
+        })
+      }
+      return null
+    }
+    finally {
+      setCheckingState(id, false)
+      if (options.refreshAfter !== false) {
+        await loadServers({ notifyOnError: false })
+      }
+    }
+  }, [loadServers, pushNotification, setCheckingState])
+
+  const runAutoCheckSweep = useCallback(async (targetServers?: MCPServer[]) => {
+    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
+      return
+    }
+    if (autoCheckInFlightRef.current) {
+      return
+    }
+
+    const baseServers = targetServers ?? serversRef.current
+    const targets = baseServers
+      .filter(server => server.enabled)
+      .map(server => server.id)
+    if (targets.length === 0) {
+      return
+    }
+
+    autoCheckInFlightRef.current = true
+    try {
+      await Promise.allSettled(
+        targets.map(id => checkConnection(id, {
+          notifyResult: false,
+          notifyError: false,
+          refreshAfter: false,
+        })),
+      )
+      await loadServers({ notifyOnError: false })
+    }
+    finally {
+      autoCheckInFlightRef.current = false
+    }
+  }, [checkConnection, loadServers])
+
+  useEffect(() => {
+    let cancelled = false
+
+    ;(async () => {
+      const allServers = await loadServers()
+      if (cancelled) return
+      setLoading(false)
+      if (allServers?.some(server => server.enabled)) {
+        await runAutoCheckSweep(allServers)
+      }
+    })()
+
+    return () => {
+      cancelled = true
+    }
+  }, [loadServers, runAutoCheckSweep])
+
+  useEffect(() => {
+    const intervalId = window.setInterval(() => {
+      void runAutoCheckSweep()
+    }, MCP_AUTO_CHECK_POLL_MS)
+
+    const handleOnline = () => {
+      void runAutoCheckSweep()
+    }
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        void runAutoCheckSweep()
+      }
+    }
+
+    window.addEventListener('online', handleOnline)
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+
+    return () => {
+      window.clearInterval(intervalId)
+      window.removeEventListener('online', handleOnline)
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
+    }
+  }, [runAutoCheckSweep])
 
   async function handleToggle(id: string, enabled: boolean) {
     try {
@@ -38,6 +178,12 @@ export function McpPage() {
         title: enabled ? 'MCP 服务已启用' : 'MCP 服务已停用',
         description: updated.name,
       })
+      if (enabled) {
+        await checkConnection(id, {
+          notifyResult: false,
+          notifyError: false,
+        })
+      }
     }
     catch (error) {
       pushNotification({
@@ -49,31 +195,7 @@ export function McpPage() {
   }
 
   async function handleCheckConnection(id: string) {
-    setCheckingIds(prev => new Set(prev).add(id))
-    try {
-      const result = await mcpService.checkConnection(id)
-      const allServers = await mcpService.getMcpServers()
-      setServers(allServers)
-      pushNotification({
-        type: result.success ? 'success' : 'error',
-        title: result.success ? '连接检查完成' : '连接检查失败',
-        description: result.message,
-      })
-    }
-    catch (error) {
-      pushNotification({
-        type: 'error',
-        title: '连接检查失败',
-        description: error instanceof Error ? error.message : '请稍后再试。',
-      })
-    }
-    finally {
-      setCheckingIds((prev) => {
-        const next = new Set(prev)
-        next.delete(id)
-        return next
-      })
-    }
+    await checkConnection(id)
   }
 
   async function handleDelete(id: string) {
@@ -118,6 +240,12 @@ export function McpPage() {
         title: 'MCP 服务已创建',
         description: server.name,
       })
+      if (server.enabled) {
+        await checkConnection(server.id, {
+          notifyResult: false,
+          notifyError: false,
+        })
+      }
     }
     catch (error) {
       pushNotification({
@@ -133,6 +261,13 @@ export function McpPage() {
   const connectedCount = servers.filter(
     server => server.connectionStatus === 'connected',
   ).length
+  const checkingCount = checkingIds.size
+
+  const statusSummary = useMemo(() => {
+    if (loading) return '加载中...'
+    if (checkingCount > 0) return `检查中 ${checkingCount} 个`
+    return `已连接 ${connectedCount} 个`
+  }, [checkingCount, connectedCount, loading])
 
   return (
     <div className="flex h-full flex-col">
@@ -155,7 +290,7 @@ export function McpPage() {
                 已启用 {enabledCount} 个
               </Badge>
               <Badge variant="success" className="px-2.5 py-1 text-xs">
-                已连接 {connectedCount} 个
+                {statusSummary}
               </Badge>
             </div>
             <Button

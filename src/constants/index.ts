@@ -11,8 +11,8 @@ export const TERMS = {
   skills: 'Skills',
   toolCall: 'Tool Call',
   enableToolCall: 'Enable Tool Call',
-  fallbackChineseSkill: '技能',
-  fallbackChineseToolCall: '工具调用',
+  fallbackChineseSkill: 'Skill',
+  fallbackChineseToolCall: 'Tool Call',
 } as const
 
 export const PROVIDER_LABELS: Record<ProviderType, string> = {
@@ -35,6 +35,7 @@ export const LIVE2D_STATE_LABELS: Record<Live2DState, string> = {
   thinking: '思考中',
   happy: '开心',
   sad: '难过',
+  error: '异常',
 }
 
 export const LAYOUT_MODE_LABELS: Record<ChatLayoutMode, string> = {

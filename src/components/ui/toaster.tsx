@@ -39,9 +39,28 @@ export function Toaster() {
             <div className="flex items-start gap-3 p-4">
               <Icon className={cn('mt-0.5 h-5 w-5 shrink-0', style.iconClassName)} />
               <div className="min-w-0 flex-1">
-                <p className="text-sm font-medium">{item.title}</p>
+                <div className="flex items-center gap-2">
+                  <p className="text-sm font-medium">{item.title}</p>
+                  {(item.repeatCount || 1) > 1 && (
+                    <span className="rounded-full border border-current/30 px-1.5 py-0.5 text-[10px] font-medium opacity-80">
+                      x{item.repeatCount}
+                    </span>
+                  )}
+                </div>
                 {item.description && (
                   <p className="mt-1 text-xs opacity-80">{item.description}</p>
+                )}
+                {item.action && (
+                  <button
+                    type="button"
+                    className="mt-2 inline-flex rounded-md border border-current/20 px-2 py-1 text-xs font-medium opacity-90 transition hover:bg-black/5 hover:opacity-100"
+                    onClick={() => {
+                      item.action?.onClick()
+                      remove(item.id)
+                    }}
+                  >
+                    {item.action.label}
+                  </button>
                 )}
               </div>
               <button

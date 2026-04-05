@@ -1,7 +1,8 @@
-import { normalizeRequestError, parseApiError } from '@/api/errors'
+﻿import { normalizeRequestError, parseApiError } from '@/api/errors'
 import { keysToCamel, keysToSnake } from '@/utils/case-convert'
 
 const USE_MOCK = import.meta.env.VITE_USE_MOCK !== 'false'
+export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8001'
 
 export interface ApiResponse<T> {
   data: T
@@ -13,7 +14,7 @@ export interface ApiResponse<T> {
  * 统一的 API 请求封装。
  * - 请求体中的 camelCase 会转换为 snake_case
  * - 响应中的 snake_case 会转换为 camelCase
- * - 网络错误和接口错误会被标准化成可读提示
+ * - 网络错误和接口错误会被标准化为可读提示
  */
 export async function apiRequest<T>(
   endpoint: string,
@@ -22,8 +23,6 @@ export async function apiRequest<T>(
   if (USE_MOCK) {
     throw new Error(`Mock mode: endpoint ${endpoint} should be handled by service layer`)
   }
-
-  const baseUrl = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
 
   let processedOptions = options
   if (options?.body && typeof options.body === 'string') {
@@ -40,7 +39,7 @@ export async function apiRequest<T>(
   }
 
   try {
-    const response = await fetch(`${baseUrl}${endpoint}`, {
+    const response = await fetch(`${API_BASE_URL}${endpoint}`, {
       headers: { 'Content-Type': 'application/json', ...processedOptions?.headers },
       ...processedOptions,
     })

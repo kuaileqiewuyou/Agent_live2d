@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     qdrant_url: str = "http://qdrant:6333"
     qdrant_api_key: str | None = None
     qdrant_collection: str = "long_term_memories"
+    qdrant_warning_cooldown_seconds: int = 60
 
     embedding_backend: str = "simple"
     embedding_dimensions: int = 64

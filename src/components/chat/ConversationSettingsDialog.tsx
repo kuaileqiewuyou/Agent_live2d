@@ -347,6 +347,7 @@ export function ConversationSettingsDialog({
                   type="button"
                   size="sm"
                   variant="outline"
+                  data-testid="conversation-dedupe-btn"
                   onClick={onDedupeMessages}
                   disabled={!onDedupeMessages || isDedupingMessages}
                 >

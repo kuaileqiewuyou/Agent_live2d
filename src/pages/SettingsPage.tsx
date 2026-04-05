@@ -268,7 +268,7 @@ export function SettingsPage() {
                   )}
                 </div>
                 <p className="text-xs text-(--color-muted-foreground)">
-                  Web 版支持直接上传本地图片，桌面端后续可以再补文件路径接入。
+                  Web 版支持直接上传本地图片，桌面端后续可再补文件路径接入。
                 </p>
 
                 <div className="space-y-2">

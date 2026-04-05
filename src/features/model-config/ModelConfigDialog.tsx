@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+﻿import { useEffect, useState } from 'react'
 import { useForm, Controller } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
@@ -34,7 +34,7 @@ const modelConfigSchema = z.object({
     'gemini',
     'ollama',
   ] as const),
-  baseUrl: z.string().min(1, 'Base URL 不能为空'),
+  baseUrl: z.string().min(1, '服务地址（Base URL）不能为空'),
   apiKey: z.string().optional().default(''),
   model: z.string().min(1, '模型名称不能为空'),
   streamEnabled: z.boolean().default(true),
@@ -157,7 +157,7 @@ export function ModelConfigDialog({
             </div>
 
             <div className="space-y-1.5">
-              <Label>供应商 *</Label>
+              <Label>Provider（供应方）*</Label>
               <Controller
                 name="provider"
                 control={control}
@@ -179,7 +179,7 @@ export function ModelConfigDialog({
             </div>
 
             <div className="space-y-1.5">
-              <Label htmlFor="baseUrl">Base URL *</Label>
+              <Label htmlFor="baseUrl">服务地址（Base URL）*</Label>
               <Input
                 id="baseUrl"
                 placeholder="https://api.example.com/v1"
@@ -193,7 +193,7 @@ export function ModelConfigDialog({
             </div>
 
             <div className="space-y-1.5">
-              <Label htmlFor="apiKey">API Key</Label>
+              <Label htmlFor="apiKey">API Key（可选）</Label>
               <div className="relative">
                 <Input
                   id="apiKey"
@@ -249,7 +249,7 @@ export function ModelConfigDialog({
 
             <div className="flex items-center justify-between">
               <Label htmlFor="toolCallSupported" className="cursor-pointer">
-                支持工具调用
+                支持 Tool Call
               </Label>
               <Controller
                 name="toolCallSupported"

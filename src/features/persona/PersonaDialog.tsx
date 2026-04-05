@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+﻿import { useCallback, useEffect, useRef, useState } from 'react'
 import type { KeyboardEvent } from 'react'
 import { useForm, Controller } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
@@ -303,7 +303,7 @@ export function PersonaDialog({
               </div>
 
               <div className="space-y-1.5">
-                <Label htmlFor="systemPromptTemplate">System Prompt</Label>
+                <Label htmlFor="systemPromptTemplate">System Prompt（系统提示词）</Label>
                 <Textarea
                   id="systemPromptTemplate"
                   rows={3}

@@ -1,6 +1,7 @@
 import process from 'node:process'
 import { spawn } from 'node:child_process'
 import { setTimeout as delay } from 'node:timers/promises'
+import { resolveAvailablePort, identifyPortHolder } from './dev-port-utils.mjs'
 
 const HELP_TEXT = `
 Local experience helper
@@ -11,6 +12,8 @@ Usage:
   node scripts/local-experience.mjs check
   node scripts/local-experience.mjs web
   node scripts/local-experience.mjs desktop
+  node scripts/local-experience.mjs web-only
+  node scripts/local-experience.mjs desktop-only
 
 Env:
   APP_HOST_PORT       Backend exposed port (default: 8001)
@@ -60,6 +63,24 @@ function runInteractive(command, args, options = {}) {
   })
 }
 
+function stageLog(stage, message) {
+  console.log(`[local][${stage}] ${message}`)
+}
+
+function resolveHealthUrl(apiBaseUrl, fallbackPort = '8001') {
+  try {
+    const parsed = new URL(apiBaseUrl)
+    return new URL('/api/health', parsed.origin).toString()
+  }
+  catch {
+    return `http://127.0.0.1:${fallbackPort}/api/health`
+  }
+}
+
+async function resolveAvailableDevPort(preferredPort = 1420) {
+  return resolveAvailablePort(preferredPort, 20)
+}
+
 async function waitForHealth(url, retries, intervalMs) {
   const curlCommand = process.platform === 'win32' ? 'curl.exe' : 'curl'
   for (let attempt = 1; attempt <= retries; attempt += 1) {
@@ -77,6 +98,17 @@ async function waitForHealth(url, retries, intervalMs) {
   throw new Error(`health check failed after ${retries} attempts: ${url}`)
 }
 
+async function ensureDockerDaemonReady() {
+  try {
+    await run('docker', ['info'], { stdio: 'ignore' })
+  }
+  catch {
+    throw new Error(
+      'Docker daemon is not running. Please start Docker Desktop first, then retry this command.',
+    )
+  }
+}
+
 function buildDockerEnv() {
   return {
     ...process.env,
@@ -86,6 +118,7 @@ function buildDockerEnv() {
 }
 
 async function dockerUp(dockerEnv) {
+  await ensureDockerDaemonReady()
   console.log('[local] starting docker services (qdrant + app)')
   await run('docker', ['compose', 'up', '--build', '-d', 'qdrant', 'app'], { env: dockerEnv })
 }
@@ -95,15 +128,16 @@ async function dockerDown(dockerEnv) {
   await run('docker', ['compose', 'down'], { env: dockerEnv })
 }
 
-async function checkBackend(dockerEnv) {
-  const port = dockerEnv.APP_HOST_PORT || '8001'
+async function checkBackend(options = {}) {
+  const port = options.APP_HOST_PORT || '8001'
   const retries = Number(process.env.SMOKE_RETRIES || '40')
   const intervalMs = Number(process.env.SMOKE_INTERVAL_MS || '3000')
-  const url = `http://127.0.0.1:${port}/api/health`
+  const url = options.healthUrl || `http://127.0.0.1:${port}/api/health`
   await waitForHealth(url, retries, intervalMs)
 }
 
-async function runWithDocker(command, args) {
+async function runWithDocker(command, args, options = {}) {
+  const mode = options.mode || 'web'
   const dockerEnv = buildDockerEnv()
   const apiBaseUrl = process.env.VITE_API_BASE_URL || `http://127.0.0.1:${dockerEnv.APP_HOST_PORT}`
   const frontendEnv = {
@@ -111,21 +145,38 @@ async function runWithDocker(command, args) {
     VITE_USE_MOCK: 'false',
     VITE_API_BASE_URL: apiBaseUrl,
   }
+  if (mode === 'web') {
+    const preferredPort = Number(process.env.VITE_DEV_SERVER_PORT || '1420')
+    const selectedPort = await resolveAvailableDevPort(preferredPort)
+    frontendEnv.VITE_DEV_SERVER_PORT = String(selectedPort)
+    if (selectedPort !== preferredPort) {
+      stageLog('frontend', `port ${preferredPort} occupied, fallback to ${selectedPort}`)
+      const holder = identifyPortHolder(preferredPort)
+      if (holder) stageLog('frontend', `port ${preferredPort} held by ${holder}`)
+    }
+  }
   let child = null
   let shuttingDown = false
+  let dockerStarted = false
+  let currentStage = 'init'
 
   const shutdown = async (signal = 'unknown') => {
     if (shuttingDown) {
       return
     }
     shuttingDown = true
-    console.log(`\n[local] shutdown requested by ${signal}`)
+    stageLog('shutdown', `requested by ${signal}`)
 
     if (child && !child.killed) {
       child.kill('SIGINT')
     }
 
+    if (!dockerStarted) {
+      return
+    }
+
     try {
+      currentStage = 'docker-down'
       await dockerDown(dockerEnv)
     }
     catch (error) {
@@ -141,9 +192,13 @@ async function runWithDocker(command, args) {
   })
 
   try {
+    currentStage = 'docker-up'
     await dockerUp(dockerEnv)
+    dockerStarted = true
+    currentStage = 'health-check'
     await checkBackend(dockerEnv)
-    console.log(`[local] frontend will connect to ${apiBaseUrl}`)
+    stageLog('frontend', `will connect to ${apiBaseUrl}`)
+    currentStage = 'app-start'
     child = runInteractive(command, args, { env: frontendEnv })
     await new Promise((resolve, reject) => {
       child.on('error', reject)
@@ -155,11 +210,83 @@ async function runWithDocker(command, args) {
         reject(new Error(`${command} ${args.join(' ')} exited with code ${code}`))
       })
     })
+    currentStage = 'docker-down'
     await dockerDown(dockerEnv)
   }
   catch (error) {
-    console.error('[local] failed:', error instanceof Error ? error.message : String(error))
+    console.error(`[local] failed at stage=${currentStage}:`, error instanceof Error ? error.message : String(error))
+    if (mode === 'desktop') {
+      console.error('[local] desktop hint: run `npm run desktop:doctor`, ensure no stale `agent-live2d.exe`; port conflicts should auto-fallback.')
+    }
     await shutdown('error')
+    process.exitCode = 1
+  }
+}
+
+async function runWithoutDocker(command, args, options = {}) {
+  const mode = options.mode || 'web'
+  const apiBaseUrl = process.env.VITE_API_BASE_URL || 'http://127.0.0.1:8001'
+  const healthUrl = resolveHealthUrl(apiBaseUrl)
+  const frontendEnv = {
+    ...process.env,
+    VITE_USE_MOCK: 'false',
+    VITE_API_BASE_URL: apiBaseUrl,
+  }
+  if (mode === 'web') {
+    const preferredPort = Number(process.env.VITE_DEV_SERVER_PORT || '1420')
+    const selectedPort = await resolveAvailableDevPort(preferredPort)
+    frontendEnv.VITE_DEV_SERVER_PORT = String(selectedPort)
+    if (selectedPort !== preferredPort) {
+      stageLog('frontend', `port ${preferredPort} occupied, fallback to ${selectedPort}`)
+      const holder = identifyPortHolder(preferredPort)
+      if (holder) stageLog('frontend', `port ${preferredPort} held by ${holder}`)
+    }
+  }
+  let child = null
+  let shuttingDown = false
+
+  stageLog('backend-check', `expecting backend at ${healthUrl}`)
+  await checkBackend({ healthUrl })
+
+  const shutdown = async (signal = 'unknown') => {
+    if (shuttingDown) return
+    shuttingDown = true
+    stageLog('shutdown', `requested by ${signal}`)
+    if (child && !child.killed) {
+      child.kill('SIGINT')
+    }
+  }
+
+  process.on('SIGINT', () => {
+    void shutdown('SIGINT').finally(() => process.exit(0))
+  })
+  process.on('SIGTERM', () => {
+    void shutdown('SIGTERM').finally(() => process.exit(0))
+  })
+
+  try {
+    if (mode === 'desktop') {
+      stageLog('desktop-preflight', 'running desktop prerequisites check')
+      await run(npmCommand(), ['run', 'desktop:doctor'])
+      await cleanupWindowsDesktopProcess()
+      await cleanupWindowsPortConflict(1420)
+    }
+
+    stageLog('frontend', `will connect to ${apiBaseUrl}`)
+    child = runInteractive(command, args, { env: frontendEnv })
+    await new Promise((resolve, reject) => {
+      child.on('error', reject)
+      child.on('exit', (code) => {
+        if (code === 0) {
+          resolve()
+          return
+        }
+        reject(new Error(`${command} ${args.join(' ')} exited with code ${code}`))
+      })
+    })
+  }
+  catch (error) {
+    console.error(`[local] failed (no-docker mode):`, error instanceof Error ? error.message : String(error))
     process.exitCode = 1
   }
 }
@@ -228,12 +355,21 @@ async function main() {
       return
     case 'web':
       await cleanupWindowsPortConflict(1420)
-      await runWithDocker(npmCommand(), ['run', 'dev'])
+      await runWithDocker(npmCommand(), ['run', 'dev'], { mode: 'web' })
       return
     case 'desktop':
+      stageLog('desktop-preflight', 'running desktop prerequisites check')
+      await run(npmCommand(), ['run', 'desktop:doctor'])
       await cleanupWindowsDesktopProcess()
       await cleanupWindowsPortConflict(1420)
-      await runWithDocker(npmCommand(), ['run', 'tauri:dev'])
+      await runWithDocker(npmCommand(), ['run', 'tauri:dev'], { mode: 'desktop' })
+      return
+    case 'web-only':
+      await cleanupWindowsPortConflict(1420)
+      await runWithoutDocker(npmCommand(), ['run', 'dev'], { mode: 'web' })
+      return
+    case 'desktop-only':
+      await runWithoutDocker(npmCommand(), ['run', 'tauri:dev'], { mode: 'desktop' })
       return
     default:
       console.error(`[local] unknown command: ${subcommand}`)

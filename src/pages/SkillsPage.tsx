@@ -90,7 +90,7 @@ export function SkillsPage() {
               <Sparkles className="h-5 w-5 text-(--color-primary)" />
             </div>
             <div>
-              <h1 className="text-xl font-bold">Skill Center</h1>
+              <h1 className="text-xl font-bold">Skill 中心</h1>
               <p className="text-xs text-(--color-muted-foreground)">
                 管理和配置 AI 助手的扩展 Skill
               </p>

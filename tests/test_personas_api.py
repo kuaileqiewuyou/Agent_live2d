@@ -36,3 +36,58 @@ def test_persona_crud_flow(client):
     assert delete_response.status_code == 200
     assert delete_response.json()["success"] is True
 
+
+def test_delete_persona_in_use_returns_conflict(client):
+    persona = client.post(
+        "/api/personas",
+        json={
+            "name": "persona-delete-guard",
+            "avatar": "avatar.png",
+            "description": "persona bound to conversation",
+            "personalityTags": ["test"],
+            "speakingStyle": "concise",
+            "backgroundStory": "seed",
+            "openingMessage": "hello",
+            "longTermMemoryEnabled": True,
+            "live2dModel": "test.model3.json",
+            "defaultLayoutMode": "chat",
+            "systemPromptTemplate": "you are test persona",
+        },
+    ).json()["data"]
+
+    model = client.post(
+        "/api/models/configs",
+        json={
+            "name": "model-for-persona-delete-guard",
+            "provider": "openai-compatible",
+            "baseUrl": "http://localhost:11434/v1",
+            "apiKey": "local-key",
+            "model": "gpt-test",
+            "streamEnabled": True,
+            "toolCallSupported": True,
+            "isDefault": False,
+            "extraConfig": {"temperature": 0.1},
+        },
+    ).json()["data"]
+
+    create_conversation = client.post(
+        "/api/conversations",
+        json={
+            "title": "conversation-using-persona",
+            "personaId": persona["id"],
+            "modelConfigId": model["id"],
+            "layoutMode": "chat",
+            "enabledSkillIds": [],
+            "enabledMcpServerIds": [],
+            "pinned": False,
+        },
+    )
+    assert create_conversation.status_code == 201
+
+    delete_response = client.delete(f"/api/personas/{persona['id']}")
+    assert delete_response.status_code == 409
+
+    body = delete_response.json()
+    assert body["success"] is False
+    assert "Persona is used by" in body["message"]
+    assert "conversation-using-persona" in body["message"]

@@ -1,4 +1,4 @@
-import type { Persona } from '@/types'
+﻿import type { Persona } from '@/types'
 import { apiRequest, isMockMode } from '@/api'
 import { mockPersonas } from '@/mock'
 import { generateId } from '@/utils'
@@ -9,6 +9,21 @@ interface ListResponse<T> {
 }
 
 let personas: Persona[] = [...mockPersonas]
+
+function normalizeDeletePersonaError(error: unknown): Error {
+  if (error instanceof Error) {
+    if (error.message.includes('Persona is used by')) {
+      return error
+    }
+
+    if (error.message.includes('persona is used by existing conversations')) {
+      return new Error('Persona is used by existing Conversations. Please switch Persona in those Conversations before deleting.')
+    }
+
+    return error
+  }
+  return new Error('Failed to delete Persona. Please try again later.')
+}
 
 async function getPersonas(): Promise<Persona[]> {
   if (isMockMode()) {
@@ -27,7 +42,7 @@ async function getPersona(id: string): Promise<Persona | undefined> {
 }
 
 async function createPersona(
-  data: Omit<Persona, 'id' | 'createdAt' | 'updatedAt'>
+  data: Omit<Persona, 'id' | 'createdAt' | 'updatedAt'>,
 ): Promise<Persona> {
   if (isMockMode()) {
     const now = new Date().toISOString()
@@ -74,9 +89,14 @@ async function deletePersona(id: string): Promise<void> {
     personas = personas.filter((p) => p.id !== id)
     return
   }
-  await apiRequest<void>(`/api/personas/${id}`, {
-    method: 'DELETE',
-  })
+  try {
+    await apiRequest<void>(`/api/personas/${id}`, {
+      method: 'DELETE',
+    })
+  }
+  catch (error) {
+    throw normalizeDeletePersonaError(error)
+  }
 }
 
 export const personaService = {

@@ -1,8 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 vi.mock('@/api', () => ({
+  API_BASE_URL: 'http://127.0.0.1:8001',
   apiRequest: vi.fn(),
   isMockMode: vi.fn(() => false),
+  parseApiError: vi.fn(async (response: Response) => new Error(`stream-${response.status}`)),
   normalizeRequestError: vi.fn((error: unknown) => (
     error instanceof Error ? error : new Error(String(error))
   )),
@@ -135,7 +137,7 @@ describe('messageService.streamMessage', () => {
       'c-3',
       'hello',
       { onFinalAnswer },
-      { manualToolRequests },
+      { manualToolRequests, metadata: { requestId: 'req-stream-1' } },
     )
 
     expect(fetchMock).toHaveBeenCalledTimes(1)
@@ -144,6 +146,7 @@ describe('messageService.streamMessage', () => {
     expect(requestInit).toBeDefined()
     const parsedBody = JSON.parse(String(requestInit?.body))
     expect(parsedBody.manualToolRequests).toEqual(manualToolRequests)
+    expect(parsedBody.metadata).toEqual(expect.objectContaining({ requestId: 'req-stream-1' }))
     expect(onFinalAnswer).toHaveBeenCalledWith({
       messageId: 'a-2',
       content: 'done',
@@ -171,6 +174,31 @@ describe('messageService.streamMessage', () => {
     expect(onStopped).toHaveBeenCalledTimes(1)
   })
 
+  it('uses parseApiError for non-ok stream response', async () => {
+    const response = new Response(JSON.stringify({
+      success: false,
+      message: 'request is still in progress',
+      data: { code: 'request_in_progress' },
+    }), {
+      status: 409,
+      headers: { 'Content-Type': 'application/json' },
+    })
+    vi.stubGlobal('fetch', vi.fn(async () => response))
+
+    const { parseApiError } = await import('@/api')
+    const parseApiErrorMock = vi.mocked(parseApiError)
+    parseApiErrorMock.mockResolvedValueOnce(new Error('request is still in progress'))
+
+    const { messageService } = await import('@/services/message.service')
+
+    await expect(
+      messageService.streamMessage('c-err', 'hello', { onToken: vi.fn() }, {}),
+    ).rejects.toThrow('request is still in progress')
+
+    expect(parseApiErrorMock).toHaveBeenCalledTimes(1)
+    expect(parseApiErrorMock).toHaveBeenCalledWith(response)
+  })
+
   it('throws when stream ends without final_answer or stopped event', async () => {
     const response = createSseResponse([
       'event: message_created\ndata: {"userMessageId":"u-5"}\n\n',
@@ -183,5 +211,132 @@ describe('messageService.streamMessage', () => {
     await expect(
       messageService.streamMessage('c-5', 'hello', { onMessageCreated: vi.fn() }, {}),
     ).rejects.toThrow('Stream ended before receiving a terminal event')
+  })
+
+  it('dispatches inferred live2dState transitions through stream lifecycle', async () => {
+    const response = createSseResponse([
+      'event: message_created\ndata: {"userMessageId":"u-6"}\n\n',
+      'event: thinking\ndata: {"message":"analyzing"}\n\n',
+      'event: token\ndata: {"content":"Hi"}\n\n',
+      'event: token\ndata: {"content":"!"}\n\n',
+      'event: final_answer\ndata: {"messageId":"a-6","content":"Hi!"}\n\n',
+    ])
+    vi.stubGlobal('fetch', vi.fn(async () => response))
+
+    const { messageService } = await import('@/services/message.service')
+    const onLive2dStateChange = vi.fn()
+
+    await messageService.streamMessage(
+      'c-6',
+      'hello',
+      { onLive2dStateChange },
+      {},
+    )
+
+    const calls = onLive2dStateChange.mock.calls.map((c: unknown[]) => c[0])
+    expect(calls[0]).toBe('thinking')
+    expect(calls[1]).toBe('thinking')
+    expect(calls).toContain('talking')
+    expect(calls[calls.length - 1]).toBe('idle')
+  })
+
+  it('uses backend live2dState from payload when present', async () => {
+    const response = createSseResponse([
+      'event: message_created\ndata: {"userMessageId":"u-7","live2dState":"happy"}\n\n',
+      'event: token\ndata: {"content":"yay","live2dState":"happy"}\n\n',
+      'event: final_answer\ndata: {"messageId":"a-7","content":"yay","live2dState":"sad"}\n\n',
+    ])
+    vi.stubGlobal('fetch', vi.fn(async () => response))
+
+    const { messageService } = await import('@/services/message.service')
+    const onLive2dStateChange = vi.fn()
+
+    await messageService.streamMessage(
+      'c-7',
+      'hello',
+      { onLive2dStateChange },
+      {},
+    )
+
+    const calls = onLive2dStateChange.mock.calls.map((c: unknown[]) => c[0])
+    expect(calls[0]).toBe('happy')
+    expect(calls[calls.length - 1]).toBe('sad')
+    expect(calls).not.toContain('idle')
+  })
+})
+
+describe('messageService.sendMessage', () => {
+  beforeEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  afterEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('passes requestId through metadata payload', async () => {
+    const { messageService } = await import('@/services/message.service')
+    const { apiRequest } = await import('@/api')
+    const apiRequestMock = vi.mocked(apiRequest)
+    apiRequestMock.mockResolvedValue({
+      success: true,
+      data: {
+        userMessage: {
+          id: 'u-10',
+          conversationId: 'c-10',
+          role: 'user',
+          senderType: 'user',
+          senderName: 'User',
+          content: 'hello',
+          createdAt: new Date().toISOString(),
+        },
+        assistantMessage: {
+          id: 'a-10',
+          conversationId: 'c-10',
+          role: 'assistant',
+          senderType: 'assistant',
+          senderName: 'AI',
+          content: 'done',
+          createdAt: new Date().toISOString(),
+        },
+      },
+      message: null,
+    } as never)
+
+    await messageService.sendMessage('c-10', 'hello', [], [], { requestId: 'req-send-1' })
+
+    expect(apiRequestMock).toHaveBeenCalledTimes(1)
+    const [, options] = apiRequestMock.mock.calls[0] as [string, { body?: string }]
+    const payload = JSON.parse(options.body || '{}')
+    expect(payload.metadata).toEqual(expect.objectContaining({ requestId: 'req-send-1' }))
+  })
+})
+
+describe('messageService.stopMessage', () => {
+  beforeEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  afterEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('calls stop endpoint with POST method', async () => {
+    const { messageService } = await import('@/services/message.service')
+    const { apiRequest } = await import('@/api')
+    const apiRequestMock = vi.mocked(apiRequest)
+    apiRequestMock.mockResolvedValue({
+      success: true,
+      data: { stopped: true, conversationId: 'c-stop-1' },
+      message: null,
+    } as never)
+
+    await messageService.stopMessage('c-stop-1')
+
+    expect(apiRequestMock).toHaveBeenCalledTimes(1)
+    expect(apiRequestMock).toHaveBeenCalledWith(
+      '/api/conversations/c-stop-1/messages/stop',
+      expect.objectContaining({ method: 'POST' }),
+    )
   })
 })

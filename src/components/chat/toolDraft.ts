@@ -11,6 +11,16 @@ type ComposerDraftMap = Record<string, string>
 
 type ParsedParams = Record<string, string>
 
+export type ManualToolValidationIssueCode = 'required' | 'number' | 'boolean' | 'enum' | 'unknown'
+
+export interface ManualToolBackendValidationIssue {
+  requestIndex: number
+  field: string
+  code: ManualToolValidationIssueCode
+  detail?: string
+  raw: string
+}
+
 const LEGACY_KEY_MAP: Record<string, string> = {
   目标: 'goal',
   查询目标: 'goal',
@@ -112,6 +122,146 @@ export function getInvalidTypedParams(request: ManualToolRequest): string[] {
 
     return false
   })
+}
+
+export function buildManualToolValidationErrorMessage(
+  request: ManualToolRequest,
+  requestIndex = 0,
+): string | null {
+  const issues: string[] = []
+  const missingFields = getMissingRequiredParams(request)
+  for (const field of missingFields) {
+    issues.push(`${field} is required`)
+  }
+
+  const fieldTypes = request.fieldTypes || {}
+  const keys = Object.keys(fieldTypes)
+  if (keys.length > 0) {
+    const fromText = parseTextParams(request.inputText)
+    const params = { ...fromText, ...(request.inputParams || {}) }
+
+    for (const key of keys) {
+      const rawType = fieldTypes[key]
+      const raw = params[key]
+      const value = typeof raw === 'string' ? raw.trim() : ''
+      if (!value) continue
+
+      if (rawType === 'number') {
+        const numeric = Number(value)
+        if (!Number.isFinite(numeric)) {
+          issues.push(`${key} should be a number`)
+        }
+        continue
+      }
+
+      if (rawType === 'boolean') {
+        if (parseBoolean(value) === null) {
+          issues.push(`${key} should be true/false`)
+        }
+        continue
+      }
+
+      if (rawType === 'enum') {
+        const options = request.fieldOptions?.[key] || []
+        if (options.length > 0 && !options.includes(value)) {
+          issues.push(`${key} should be one of ${options.join(', ')}`)
+        }
+      }
+    }
+  }
+
+  if (issues.length === 0) return null
+  return `manualToolRequests[${requestIndex}] invalid params: ${issues.join('; ')}`
+}
+
+function toIssueCode(rawIssue: string): { field: string, code: ManualToolValidationIssueCode, detail?: string } | null {
+  const issue = rawIssue.trim()
+  if (!issue) return null
+
+  let match = issue.match(/^(.+?)\s+is required$/i)
+  if (match) {
+    return { field: match[1].trim(), code: 'required' }
+  }
+
+  match = issue.match(/^(.+?)\s+should be a number$/i)
+  if (match) {
+    return { field: match[1].trim(), code: 'number' }
+  }
+
+  match = issue.match(/^(.+?)\s+should be true\/false$/i)
+  if (match) {
+    return { field: match[1].trim(), code: 'boolean' }
+  }
+
+  match = issue.match(/^(.+?)\s+should be one of\s+(.+)$/i)
+  if (match) {
+    return { field: match[1].trim(), code: 'enum', detail: match[2].trim() }
+  }
+
+  const unknownMatch = issue.match(/^([A-Za-z0-9_.-]+)\b/)
+  if (unknownMatch) {
+    return { field: unknownMatch[1].trim(), code: 'unknown' }
+  }
+
+  return null
+}
+
+export function parseManualToolBackendValidationIssues(message: string): ManualToolBackendValidationIssue[] {
+  const normalized = message.trim()
+  if (!normalized) return []
+
+  const prefixMatch = normalized.match(/^manualToolRequests\[(\d+)\]\s+invalid params:\s*(.+)$/i)
+  if (!prefixMatch) return []
+
+  const requestIndex = Number(prefixMatch[1])
+  if (!Number.isInteger(requestIndex) || requestIndex < 0) return []
+
+  const issuePart = prefixMatch[2].trim()
+  if (!issuePart) return []
+
+  const issues = issuePart
+    .split(';')
+    .map(item => item.trim())
+    .filter(Boolean)
+
+  const parsedIssues: ManualToolBackendValidationIssue[] = []
+  for (const issue of issues) {
+    const parsed = toIssueCode(issue)
+    if (!parsed) continue
+    parsedIssues.push({
+      requestIndex,
+      field: parsed.field,
+      code: parsed.code,
+      ...(parsed.detail ? { detail: parsed.detail } : {}),
+      raw: issue,
+    })
+  }
+  return parsedIssues
+}
+
+export function formatManualToolBackendValidationIssue(issue: ManualToolBackendValidationIssue): string {
+  if (issue.code === 'required') {
+    return `${issue.field} 为必填项`
+  }
+  if (issue.code === 'number') {
+    return `${issue.field} 需要 number 类型`
+  }
+  if (issue.code === 'boolean') {
+    return `${issue.field} 需要 true/false`
+  }
+  if (issue.code === 'enum') {
+    return `${issue.field} 需为以下值之一：${issue.detail || ''}`.trim()
+  }
+  return `${issue.field} 参数不合法`
+}
+
+export function buildManualToolBackendValidationHint(message: string): string | null {
+  const issues = parseManualToolBackendValidationIssues(message)
+  if (issues.length === 0) return null
+  const first = issues[0]
+  const indexLabel = first.requestIndex + 1
+  const issueText = issues.slice(0, 2).map(formatManualToolBackendValidationIssue).join('；')
+  return `Tool #${indexLabel} 参数校验失败：${issueText}`
 }
 
 export function buildToolFallbackContent(

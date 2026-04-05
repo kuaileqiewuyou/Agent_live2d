@@ -40,16 +40,19 @@ def create_app() -> FastAPI:
 
     @app.exception_handler(AppError)
     async def handle_app_error(request: Request, exc: AppError):  # noqa: ARG001
+        data = {"code": exc.code}
+        if exc.details:
+            data.update(exc.details)
         return JSONResponse(
             status_code=exc.status_code,
-            content=api_response({}, success=False, message=exc.message),
+            content=api_response(data, success=False, message=exc.message),
         )
 
     @app.exception_handler(Exception)
     async def handle_unexpected_error(request: Request, exc: Exception):  # noqa: ARG001
         return JSONResponse(
             status_code=500,
-            content=api_response({}, success=False, message=str(exc)),
+            content=api_response({"code": "internal_error"}, success=False, message=str(exc)),
         )
 
     return app

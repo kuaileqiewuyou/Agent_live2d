@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 
 def test_model_config_default_switch_and_test_connection(client):
     first = client.post(
@@ -121,12 +123,99 @@ def test_mcp_check_and_capabilities_roundtrip(client):
     assert isinstance(check_data["resourceCount"], int)
     assert isinstance(check_data["promptCount"], int)
     assert isinstance(check_data["detail"], str)
+    assert isinstance(check_data["usedCache"], bool)
 
     capabilities = client.get(f"/api/mcp/servers/{server_id}/capabilities")
     assert capabilities.status_code == 200
     cap_data = capabilities.json()["data"]
     assert isinstance(cap_data, dict)
-    assert {"tools", "resources", "prompts", "detail"}.issubset(cap_data.keys())
+    assert {
+        "tools",
+        "resources",
+        "prompts",
+        "detail",
+        "source",
+        "status",
+        "lastCheckedAt",
+        "lastSuccessAt",
+        "lastError",
+    }.issubset(cap_data.keys())
+
+
+def test_mcp_check_falls_back_to_cached_capabilities_when_probe_fails(client, monkeypatch):
+    create = client.post(
+        "/api/mcp/servers",
+        json={
+            "name": "mcp-fallback-check",
+            "description": "MCP fallback probe",
+            "transportType": "http",
+            "endpointOrCommand": "http://127.0.0.1:9999",
+            "enabled": True,
+        },
+    )
+    assert create.status_code == 201
+    server_id = create.json()["data"]["id"]
+
+    responses = [
+        {
+            "ok": True,
+            "status": "connected",
+            "detail": "probe ok",
+            "tools": [{"name": "echo", "description": "echo tool"}],
+            "resources": [{"name": "docs", "uri": "memory://docs", "description": "doc"}],
+            "prompts": [{"name": "hello", "description": "prompt"}],
+            "checked_at": datetime.now(timezone.utc),
+        },
+        {
+            "ok": False,
+            "status": "error",
+            "detail": "probe timeout",
+            "tools": [],
+            "resources": [],
+            "prompts": [],
+            "checked_at": datetime.now(timezone.utc),
+        },
+    ]
+
+    async def fake_inspect_server(self, *, transport_type: str, endpoint_or_command: str):
+        assert transport_type == "http"
+        assert endpoint_or_command == "http://127.0.0.1:9999"
+        return responses.pop(0)
+
+    monkeypatch.setattr(
+        "app.services.mcp.MCPClientManager.inspect_server",
+        fake_inspect_server,
+    )
+
+    first_check = client.post(f"/api/mcp/servers/{server_id}/check")
+    assert first_check.status_code == 200
+    first_data = first_check.json()["data"]
+    assert first_data["ok"] is True
+    assert first_data["usedCache"] is False
+    assert first_data["toolCount"] == 1
+    assert first_data["resourceCount"] == 1
+    assert first_data["promptCount"] == 1
+
+    second_check = client.post(f"/api/mcp/servers/{server_id}/check")
+    assert second_check.status_code == 200
+    second_data = second_check.json()["data"]
+    assert second_data["ok"] is False
+    assert second_data["status"] == "error"
+    assert second_data["usedCache"] is True
+    assert second_data["toolCount"] == 1
+    assert second_data["resourceCount"] == 1
+    assert second_data["promptCount"] == 1
+    assert "using cached capabilities" in second_data["detail"]
+
+    capabilities = client.get(f"/api/mcp/servers/{server_id}/capabilities")
+    assert capabilities.status_code == 200
+    cap_data = capabilities.json()["data"]
+    assert cap_data["source"] == "cache"
+    assert cap_data["status"] == "error"
+    assert cap_data["lastError"] == "probe timeout"
+    assert len(cap_data["tools"]) == 1
+    assert len(cap_data["resources"]) == 1
+    assert len(cap_data["prompts"]) == 1
 
 
 def test_meta_catalog_endpoints(client):

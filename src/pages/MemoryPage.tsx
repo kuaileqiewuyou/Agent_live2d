@@ -15,6 +15,7 @@ import {
 import { conversationService, memoryService, personaService } from '@/services'
 import { useNotificationStore } from '@/stores'
 import type { Conversation, LongTermMemory, Persona } from '@/types'
+import { isMemoryVectorFallbackError } from '@/utils/memory-fallback'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -183,6 +184,15 @@ export function MemoryPage() {
       setSearchResults(results)
     }
     catch (error) {
+      if (isMemoryVectorFallbackError(error)) {
+        setSearchResults(null)
+        pushNotification({
+          type: 'info',
+          title: '记忆检索已降级',
+          description: '向量检索暂不可用，已切换到本地过滤模式，不影响继续聊天。',
+        })
+        return
+      }
       pushNotification({
         type: 'error',
         title: '搜索记忆失败',
@@ -306,6 +316,12 @@ export function MemoryPage() {
           <Badge variant="outline">{stats.conversationCount} 个会话</Badge>
         </div>
       </div>
+
+      <Card className="border-emerald-500/30 bg-emerald-500/5">
+        <CardContent className="py-3 text-xs text-emerald-700">
+          若向量服务（Qdrant）临时不可用，记忆检索会自动降级到本地过滤，不影响聊天主链路。
+        </CardContent>
+      </Card>
 
       {activeFilters.length > 0 && (
         <Card className="border-(--color-primary)/20 bg-(--color-primary)/5">

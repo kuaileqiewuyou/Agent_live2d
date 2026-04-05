@@ -1,6 +1,7 @@
-import { Cable, Play, SlidersHorizontal, Sparkles, Wrench } from 'lucide-react'
+import { AlertTriangle, Cable, Play, RefreshCw, Settings2, SlidersHorizontal, Sparkles, Wrench } from 'lucide-react'
 import type {
   MCPServer,
+  ManualToolFailureHint,
   ManualToolInputParams,
   ManualToolParamType,
   ManualToolRequest,
@@ -10,17 +11,26 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { cn, generateId } from '@/utils'
-import { getInvalidTypedParams } from '@/components/chat/toolDraft'
+import {
+  buildManualToolValidationErrorMessage,
+  formatManualToolBackendValidationIssue,
+  getInvalidTypedParams,
+  type ManualToolBackendValidationIssue,
+} from '@/components/chat/toolDraft'
 
 interface ChatToolPanelProps {
   skills: Skill[]
   mcpServers: MCPServer[]
   selectedRequests: ManualToolRequest[]
+  recentToolFailures?: ManualToolFailureHint[]
+  backendValidationIssues?: ManualToolBackendValidationIssue[]
   conversationTitle?: string
   personaName?: string
   disabled?: boolean
   onChange: (requests: ManualToolRequest[]) => void
   onQuickSend: (request: ManualToolRequest, defaultContent: string) => void
+  onOpenConversationSettings?: () => void
+  onOpenMcpCenter?: () => void
 }
 
 interface ToolParamFieldDef {
@@ -223,7 +233,7 @@ function getSkillFieldDefs(skill: Skill): ToolParamFieldDef[] {
     const placeholder = dataType === 'number'
       ? `请输入数值（${label}）`
       : dataType === 'boolean'
-        ? `请选择 true / false`
+        ? '请选择 true / false'
         : dataType === 'enum'
           ? `请选择 ${label}`
           : (help || `请输入 ${label}`)
@@ -291,6 +301,25 @@ function createMcpDefaultContent(serverName: string, conversationTitle?: string)
   return `请调用 MCP 服务「${serverName}」，为${context}获取这次需要的信息。`
 }
 
+function getFailureSummaryText(failure: ManualToolFailureHint) {
+  if (failure.summary?.trim()) return failure.summary.trim()
+  if (failure.reason === 'not_enabled') return '该 Tool 当前未在会话中启用。'
+  if (failure.reason === 'invalid_params') return '参数校验失败，请补全或修正字段后重试。'
+  if (failure.reason === 'execution_error') return '执行过程中出现错误，请检查连接状态后重试。'
+  return '上一次调用未成功，请根据提示修复后重试。'
+}
+
+function getFailureSuggestionText(failure: ManualToolFailureHint) {
+  if (failure.type === 'skill') {
+    if (failure.reason === 'not_enabled') return '建议先在会话设置中启用该 Skill，再重新附加本轮。'
+    if (failure.reason === 'invalid_params') return '建议先补全必填参数并修正参数类型，再执行。'
+    return '建议先重新附加到本轮，必要时检查 Skill 配置后再试。'
+  }
+
+  if (failure.reason === 'not_enabled') return '建议先确认会话已绑定该 MCP 服务，再重试。'
+  return '建议先检查 MCP 连接状态与配置，再重试。'
+}
+
 function isTextareaField(key: string) {
   return key.toLowerCase() === 'notes'
 }
@@ -308,11 +337,15 @@ export function ChatToolPanel({
   skills,
   mcpServers,
   selectedRequests,
+  recentToolFailures = [],
+  backendValidationIssues = [],
   conversationTitle,
   personaName,
   disabled = false,
   onChange,
   onQuickSend,
+  onOpenConversationSettings,
+  onOpenMcpCenter,
 }: ChatToolPanelProps) {
   const toolItems: ToolItem[] = [
     ...skills.map(skill => ({
@@ -330,6 +363,7 @@ export function ChatToolPanel({
       fieldDefs: DEFAULT_MCP_FIELDS,
     })),
   ]
+  const toolItemMap = new Map(toolItems.map(item => [`${item.kind}:${item.id}`, item] as const))
 
   const toggleRequest = (item: ToolItem) => {
     const existing = selectedRequests.find(request => request.type === item.kind && request.targetId === item.id)
@@ -359,12 +393,31 @@ export function ChatToolPanel({
     )
   }
 
+  const buildRetryRequest = (failure: ManualToolFailureHint) => {
+    if (!failure.targetId) return null
+
+    const item = toolItemMap.get(`${failure.type}:${failure.targetId}`)
+    if (!item) return null
+
+    const existing = selectedRequests.find(request => request.type === item.kind && request.targetId === item.id)
+    const previous: ManualToolRequest = existing || {
+      id: generateId(),
+      type: item.kind,
+      targetId: item.id,
+      label: item.name,
+      inputText: failure.inputText,
+      inputParams: failure.inputParams,
+    }
+    return buildRequest(item.kind, item.id, item.name, item.fieldDefs, previous)
+  }
+
   const clearAll = () => onChange([])
   const filledInputCount = selectedRequests.filter(request => (
     request.inputText?.trim() || hasAnyInputParams(request.inputParams)
   )).length
   const missingRequiredCount = selectedRequests.filter(request => getMissingRequiredFields(request).length > 0).length
   const invalidTypedCount = selectedRequests.filter(request => getInvalidTypedParams(request).length > 0).length
+  const hasValidationIssues = missingRequiredCount > 0 || invalidTypedCount > 0
 
   const quickActions = [
     ...skills.slice(0, 3).map(skill => ({
@@ -407,11 +460,113 @@ export function ChatToolPanel({
           )}
         </div>
 
+        {selectedRequests.length > 0 && hasValidationIssues && (
+          <div className="rounded-md border border-(--color-destructive)/40 bg-(--color-destructive)/10 px-2.5 py-1.5 text-[11px] text-(--color-destructive)">
+            参数未完成：请先补全必填项并修正类型错误，再发送本轮消息。
+          </div>
+        )}
+
+        {recentToolFailures.length > 0 && (
+          <div className="space-y-2 rounded-md border border-amber-300/60 bg-amber-50/70 px-3 py-2.5">
+            <div className="flex items-center gap-1.5 text-xs font-medium text-amber-900">
+              <AlertTriangle className="h-3.5 w-3.5" />
+              最近一次 Tool 调用有失败，可按下列步骤修复
+            </div>
+            <div className="space-y-2">
+              {recentToolFailures.slice(0, 3).map((failure, index) => {
+                const retryRequest = buildRetryRequest(failure)
+                const hasBlockingIssue = retryRequest
+                  ? getMissingRequiredFields(retryRequest).length > 0 || getInvalidTypedParams(retryRequest).length > 0
+                  : false
+                const retryLabel = retryRequest?.label || failure.label
+                const retryContent = failure.type === 'skill'
+                  ? createSkillDefaultContent(retryLabel, conversationTitle, personaName)
+                  : createMcpDefaultContent(retryLabel, conversationTitle)
+
+                return (
+                  <div key={`${failure.type}-${failure.label}-${index}`} className="rounded-md border border-amber-300/50 bg-white/70 px-2.5 py-2">
+                    <div className="flex flex-wrap items-center gap-2 text-xs">
+                      <Badge variant={failure.type === 'skill' ? 'secondary' : 'outline'}>
+                        {failure.type === 'skill' ? 'Skill' : 'MCP'}
+                      </Badge>
+                      <span className="font-medium text-amber-900">{failure.label}</span>
+                    </div>
+                    <div className="mt-1 text-[11px] text-amber-900/90">
+                      {getFailureSummaryText(failure)}
+                    </div>
+                    <div className="mt-0.5 text-[11px] text-amber-900/80">
+                      {getFailureSuggestionText(failure)}
+                    </div>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      {retryRequest && (
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          className="h-7 border-amber-300 bg-white px-2 text-[11px] text-amber-900 hover:bg-amber-100"
+                          disabled={disabled}
+                          onClick={() => onChange(withRequest(selectedRequests, retryRequest))}
+                        >
+                          重新附加到本轮
+                        </Button>
+                      )}
+                      {retryRequest && (
+                        <Button
+                          type="button"
+                          size="sm"
+                          className="h-7 px-2 text-[11px]"
+                          disabled={disabled}
+                          onClick={() => {
+                            if (hasBlockingIssue) {
+                              onChange(withRequest(selectedRequests, retryRequest))
+                              return
+                            }
+                            onQuickSend({ ...retryRequest, autoExecute: true }, retryContent)
+                          }}
+                        >
+                          <RefreshCw className="mr-1 h-3 w-3" />
+                          一键重试
+                        </Button>
+                      )}
+                      {failure.type === 'skill' && onOpenConversationSettings && (
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="ghost"
+                          className="h-7 px-2 text-[11px] text-amber-900"
+                          disabled={disabled}
+                          onClick={onOpenConversationSettings}
+                        >
+                          <Settings2 className="mr-1 h-3 w-3" />
+                          打开会话设置
+                        </Button>
+                      )}
+                      {failure.type === 'mcp' && onOpenMcpCenter && (
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="ghost"
+                          className="h-7 px-2 text-[11px] text-amber-900"
+                          disabled={disabled}
+                          onClick={onOpenMcpCenter}
+                        >
+                          <Settings2 className="mr-1 h-3 w-3" />
+                          打开 MCP 页面
+                        </Button>
+                      )}
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+        )}
+
         {quickActions.length > 0 && (
           <div className="space-y-2">
             <div className="flex items-center gap-2 text-xs font-medium text-(--color-muted-foreground)">
               <Play className="h-3.5 w-3.5" />
-              Quick Actions
+              快捷动作
             </div>
             <div className="grid gap-2 md:grid-cols-2">
               {quickActions.map(action => (
@@ -459,7 +614,7 @@ export function ChatToolPanel({
         <div className="space-y-3">
           <div className="flex items-center gap-2 text-xs font-medium text-(--color-muted-foreground)">
             <Wrench className="h-3.5 w-3.5" />
-            Attach To This Turn
+            附加到本轮
           </div>
 
           <div className="space-y-2">
@@ -471,6 +626,15 @@ export function ChatToolPanel({
               const orderedKeys = item.fieldDefs.map(field => field.key)
               const missingRequired = existing ? getMissingRequiredFields(existing) : []
               const invalidTyped = existing ? getInvalidTypedParams(existing) : []
+              const requestIndex = existing
+                ? selectedRequests.findIndex(request => request.id === existing.id)
+                : -1
+              const backendRequestIssues = requestIndex >= 0
+                ? backendValidationIssues.filter(issue => issue.requestIndex === requestIndex)
+                : []
+              const validationMessage = existing
+                ? buildManualToolValidationErrorMessage(existing, Math.max(0, requestIndex))
+                : null
 
               return (
                 <div key={`${item.kind}-${item.id}`} className="rounded-xl border border-(--color-border) px-3 py-3">
@@ -525,6 +689,8 @@ export function ChatToolPanel({
                           const fieldType = field.dataType || 'string'
                           const value = fields[field.key] || ''
                           const hasTypeError = invalidTyped.includes(field.key)
+                          const hasMissingRequired = missingRequired.includes(field.key)
+                          const backendFieldIssue = backendRequestIssues.find(issue => issue.field === field.key)
 
                           return (
                             <label key={`${item.id}-${field.key}`} className="flex flex-col gap-1">
@@ -545,6 +711,7 @@ export function ChatToolPanel({
                                   className={cn(
                                     'h-9 w-full rounded-lg border border-(--color-input) bg-(--color-background) px-2.5 text-xs',
                                     'focus:outline-none focus:ring-2 focus:ring-(--color-ring)',
+                                    hasMissingRequired && 'border-(--color-destructive) focus:ring-(--color-destructive)/40',
                                     hasTypeError && 'border-amber-500 focus:ring-amber-400',
                                   )}
                                   disabled={disabled}
@@ -560,6 +727,7 @@ export function ChatToolPanel({
                                   className={cn(
                                     'h-9 w-full rounded-lg border border-(--color-input) bg-(--color-background) px-2.5 text-xs',
                                     'focus:outline-none focus:ring-2 focus:ring-(--color-ring)',
+                                    hasMissingRequired && 'border-(--color-destructive) focus:ring-(--color-destructive)/40',
                                     hasTypeError && 'border-amber-500 focus:ring-amber-400',
                                   )}
                                   disabled={disabled}
@@ -578,6 +746,7 @@ export function ChatToolPanel({
                                     'min-h-[56px] w-full resize-y rounded-lg border border-(--color-input) bg-(--color-background) px-3 py-2 text-sm',
                                     'placeholder:text-(--color-muted-foreground)',
                                     'focus:outline-none focus:ring-2 focus:ring-(--color-ring)',
+                                    hasMissingRequired && 'border-(--color-destructive) focus:ring-(--color-destructive)/40',
                                     hasTypeError && 'border-amber-500 focus:ring-amber-400',
                                   )}
                                   disabled={disabled}
@@ -592,6 +761,7 @@ export function ChatToolPanel({
                                     'h-9 w-full rounded-lg border border-(--color-input) bg-(--color-background) px-2.5 text-xs',
                                     'placeholder:text-(--color-muted-foreground)',
                                     'focus:outline-none focus:ring-2 focus:ring-(--color-ring)',
+                                    hasMissingRequired && 'border-(--color-destructive) focus:ring-(--color-destructive)/40',
                                     hasTypeError && 'border-amber-500 focus:ring-amber-400',
                                   )}
                                   disabled={disabled}
@@ -599,22 +769,30 @@ export function ChatToolPanel({
                               )}
 
                               {field.help && <span className="text-[10px] text-(--color-muted-foreground)">{field.help}</span>}
+                              {hasMissingRequired && (
+                                <span className="text-[10px] text-(--color-destructive)">必填参数不能为空。</span>
+                              )}
                               {hasTypeError && (
                                 <span className="text-[10px] text-amber-700">参数格式不正确，请按字段类型填写。</span>
+                              )}
+                              {backendFieldIssue && (
+                                <span className="text-[10px] text-amber-800">
+                                  后端校验：{formatManualToolBackendValidationIssue(backendFieldIssue)}
+                                </span>
                               )}
                             </label>
                           )
                         })}
                       </div>
 
-                      {missingRequired.length > 0 && (
-                        <div className="mt-2 text-[11px] text-(--color-destructive)">
-                          缺少必填参数：{missingRequired.join('、')}
+                      {backendRequestIssues.length > 0 && (
+                        <div className="mt-2 text-[11px] text-amber-800">
+                          后端返回：{backendRequestIssues.map(issue => formatManualToolBackendValidationIssue(issue)).join('；')}
                         </div>
                       )}
-                      {invalidTyped.length > 0 && (
-                        <div className="mt-1 text-[11px] text-amber-700">
-                          参数类型错误：{invalidTyped.join('、')}
+                      {validationMessage && (
+                        <div className="mt-2 text-[11px] text-(--color-destructive)">
+                          {validationMessage}
                         </div>
                       )}
                     </div>
@@ -628,3 +806,5 @@ export function ChatToolPanel({
     </Card>
   )
 }
+
+

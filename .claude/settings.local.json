@@ -11,7 +11,8 @@
       "Bash(cp -r temp-init/* .)",
       "Bash(cp temp-init/.gitignore .)",
       "Bash(rm -rf temp-init)",
-      "Bash(npm install:*)"
+      "Bash(npm install:*)",
+      "Bash(npx vitest:*)"
     ]
   }
 }

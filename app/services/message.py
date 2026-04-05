@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+from dataclasses import dataclass
 from collections.abc import AsyncIterator
 from http import HTTPStatus
 from typing import Any
@@ -20,35 +22,109 @@ from app.repositories import (
 from app.schemas.message import StreamEvent
 from app.services.memory import MemoryApplicationService
 
+logger = logging.getLogger(__name__)
+
+_LIVE2D_STATE_BY_EVENT = {
+    "message_created": "thinking",
+    "thinking": "thinking",
+    "tool_calling": "thinking",
+    "tool_result": "thinking",
+    "memory_sync": "thinking",
+    "token": "talking",
+    "final_answer": "idle",
+    "stopped": "idle",
+}
+
 
 class GenerationCoordinator:
     def __init__(self) -> None:
         self._events: dict[str, asyncio.Event] = {}
+        self._request_turns: dict[tuple[str, str], asyncio.Event] = {}
+        self._active_stream_counts: dict[str, int] = {}
+        self._pending_stop_requests: set[str] = set()
+        self._request_turn_lock = asyncio.Lock()
 
     def new(self, conversation_id: str) -> asyncio.Event:
         event = asyncio.Event()
         self._events[conversation_id] = event
+        if conversation_id in self._pending_stop_requests:
+            self._pending_stop_requests.discard(conversation_id)
+            event.set()
         return event
 
     def stop(self, conversation_id: str) -> None:
         event = self._events.get(conversation_id)
         if event:
             event.set()
+            return
+        if self._active_stream_counts.get(conversation_id, 0) > 0:
+            self._pending_stop_requests.add(conversation_id)
 
     def clear(self, conversation_id: str) -> None:
         self._events.pop(conversation_id, None)
+
+    def begin_stream(self, conversation_id: str) -> None:
+        current = self._active_stream_counts.get(conversation_id, 0)
+        self._active_stream_counts[conversation_id] = current + 1
+
+    def end_stream(self, conversation_id: str) -> None:
+        current = self._active_stream_counts.get(conversation_id, 0)
+        if current <= 1:
+            self._active_stream_counts.pop(conversation_id, None)
+            self._pending_stop_requests.discard(conversation_id)
+        else:
+            self._active_stream_counts[conversation_id] = current - 1
+        self.clear(conversation_id)
+
+    async def acquire_request_turn(self, conversation_id: str, request_id: str) -> RequestTurnLease:
+        key = (conversation_id, request_id)
+        async with self._request_turn_lock:
+            event = self._request_turns.get(key)
+            if event is None:
+                event = asyncio.Event()
+                self._request_turns[key] = event
+                return RequestTurnLease(
+                    conversation_id=conversation_id,
+                    request_id=request_id,
+                    event=event,
+                    owner=True,
+                )
+            return RequestTurnLease(
+                conversation_id=conversation_id,
+                request_id=request_id,
+                event=event,
+                owner=False,
+            )
+
+    async def wait_for_request_turn(self, lease: RequestTurnLease, timeout_seconds: float) -> None:
+        await asyncio.wait_for(lease.event.wait(), timeout=max(0.0, timeout_seconds))
+
+    async def release_request_turn(self, lease: RequestTurnLease) -> None:
+        key = (lease.conversation_id, lease.request_id)
+        async with self._request_turn_lock:
+            event = self._request_turns.pop(key, None)
+        if event is not None:
+            event.set()
+
+
+@dataclass(slots=True)
+class RequestTurnLease:
+    conversation_id: str
+    request_id: str
+    event: asyncio.Event
+    owner: bool
 
 
 generation_coordinator = GenerationCoordinator()
 
 
 def _normalize_tool_label(item: dict) -> str:
-    raw = item.get("label") or item.get("name") or item.get("title") or "工具"
+    raw = item.get("label") or item.get("name") or item.get("title") or "Tool"
     normalized = str(raw).strip()
-    for prefix in ("Skill: ", "Skill：", "MCP: ", "MCP：", "技能：", "技能:"):
+    for prefix in ("Skill: ", "MCP: ", "技能: ", "技能："):
         if normalized.startswith(prefix):
             normalized = normalized[len(prefix) :].strip()
-    return normalized or "工具"
+    return normalized or "Tool"
 
 
 def _normalize_manual_tool_request(item: dict) -> dict:
@@ -149,7 +225,6 @@ def _parse_tool_input_text(input_text: str | None) -> dict[str, str]:
             parsed[normalized_key] = normalized_value
     return parsed
 
-
 def _normalize_tool_input_params(input_params: Any) -> dict[str, str]:
     if not isinstance(input_params, dict):
         return {}
@@ -215,11 +290,25 @@ def _validate_manual_request_against_skill_schema(skill, request: dict[str, Any]
 
     params = _resolve_manual_request_params(request)
     errors: list[str] = []
+    issues: list[dict[str, Any]] = []
+
+    def append_issue(field: str, reason: str, issue_type: str, expected: Any = None) -> None:
+        issue: dict[str, Any] = {
+            "path": f"manualToolRequests[{request_index}].inputParams.{field}",
+            "field": field,
+            "reason": reason,
+            "type": issue_type,
+        }
+        if expected is not None:
+            issue["expected"] = expected
+        issues.append(issue)
 
     for field in required_fields:
         value = params.get(field, "").strip()
         if not value:
-            errors.append(f"{field} is required")
+            reason = f"{field} is required"
+            errors.append(reason)
+            append_issue(field, reason, "required")
 
     for field, raw_schema in properties.items():
         if not isinstance(raw_schema, dict):
@@ -233,12 +322,16 @@ def _validate_manual_request_against_skill_schema(skill, request: dict[str, Any]
             try:
                 float(value)
             except ValueError:
-                errors.append(f"{field} should be a number")
+                reason = f"{field} should be a number"
+                errors.append(reason)
+                append_issue(field, reason, "type", "number")
             continue
 
         if field_type == "boolean":
             if value.lower() not in {"true", "false"}:
-                errors.append(f"{field} should be true/false")
+                reason = f"{field} should be true/false"
+                errors.append(reason)
+                append_issue(field, reason, "type", "boolean")
             continue
 
         if field_type == "enum":
@@ -248,13 +341,19 @@ def _validate_manual_request_against_skill_schema(skill, request: dict[str, Any]
                 if isinstance(item, (str, int, float, bool))
             ]
             if options and value not in options:
-                errors.append(f"{field} should be one of {', '.join(options)}")
+                reason = f"{field} should be one of {', '.join(options)}"
+                errors.append(reason)
+                append_issue(field, reason, "enum", options)
 
     if errors:
         raise AppError(
             f"manualToolRequests[{request_index}] invalid params: {'; '.join(errors)}",
             status_code=HTTPStatus.UNPROCESSABLE_ENTITY,
-            code="manual_tool_params_invalid",
+            code="validation_error",
+            details={
+                "source": "manual_tool_requests",
+                "issues": issues,
+            },
         )
 
 
@@ -266,6 +365,23 @@ def _message_timestamp(message: Message) -> float:
         return float(created_at.timestamp())
     except Exception:  # pragma: no cover - defensive fallback
         return 0.0
+
+
+def _to_provider_error(error: Exception) -> AppError:
+    detail = str(error).strip() or "provider call failed"
+    return AppError(
+        f"provider call failed: {detail}",
+        status_code=HTTPStatus.BAD_GATEWAY,
+        code="provider_error",
+    )
+
+
+def _build_stream_event(event: str, data: dict[str, Any]) -> dict[str, Any]:
+    payload = dict(data) if isinstance(data, dict) else {}
+    live2d_state = _LIVE2D_STATE_BY_EVENT.get(event)
+    if live2d_state and "live2dState" not in payload:
+        payload["live2dState"] = live2d_state
+    return StreamEvent(event=event, data=payload).model_dump(by_alias=True)
 
 
 def _build_user_assistant_turns(messages: list[Message]) -> list[tuple[Message, Message | None]]:
@@ -358,7 +474,7 @@ def _collect_adjacent_duplicate_turn_ids(
 
 
 class MessageService:
-    def __init__(self, session: AsyncSession) -> None:
+    def __init__(self, session: AsyncSession, *, request_turn_wait_timeout_seconds: float = 6.0) -> None:
         self.session = session
         self.repo = MessageRepository(session)
         self.conversation_repo = ConversationRepository(session)
@@ -366,6 +482,97 @@ class MessageService:
         self.memory_repo = LongTermMemoryRepository(session)
         self.summary_repo = MemorySummaryRepository(session)
         self.graph = AgentOrchestrator()
+        self.request_turn_wait_timeout_seconds = request_turn_wait_timeout_seconds
+
+    async def _load_long_term_memory_context(self, conversation) -> list[dict[str, str]]:
+        conversation_memories = await self.memory_repo.search(
+            conversation_id=conversation.id,
+            memory_scope="conversation",
+        )
+        persona_memories = await self.memory_repo.search(
+            persona_id=conversation.persona_id,
+            memory_scope="persona",
+        )
+
+        merged: list[dict[str, str]] = []
+        seen_ids: set[str] = set()
+        for memory in [*conversation_memories, *persona_memories]:
+            if memory.id in seen_ids:
+                continue
+            seen_ids.add(memory.id)
+            merged.append({"content": memory.content})
+            if len(merged) >= 3:
+                break
+        return merged
+
+    async def _sync_memory_after_turn(
+        self,
+        *,
+        conversation,
+        conversation_id: str,
+        user_input: str,
+    ) -> None:
+        try:
+            all_messages = await self.repo.list_by_conversation(conversation_id)
+            if len(all_messages) >= 6:
+                await self.memory_service.summarize(
+                    conversation_id=conversation_id,
+                    messages=all_messages,
+                )
+
+            if conversation.persona.long_term_memory_enabled:
+                await self.memory_service.create_long_term(
+                    {
+                        "conversation_id": conversation_id,
+                        "persona_id": conversation.persona_id,
+                        "memory_scope": "conversation",
+                        "content": user_input,
+                        "tags": ["chat", "conversation"],
+                        "metadata": {"source": "user_message"},
+                    }
+                )
+        except Exception as exc:  # pragma: no cover - degrade path
+            logger.warning("memory sync skipped for conversation %s: %s", conversation_id, exc)
+
+    async def _resolve_request_turn(
+        self,
+        conversation_id: str,
+        request_id: str,
+    ) -> tuple[Message | None, Message | None, RequestTurnLease | None]:
+        existing_user, existing_assistant = await self._find_existing_turn_by_request_id(conversation_id, request_id)
+        if existing_user and existing_assistant:
+            return existing_user, existing_assistant, None
+
+        request_turn = await generation_coordinator.acquire_request_turn(conversation_id, request_id)
+        if not request_turn.owner:
+            try:
+                await generation_coordinator.wait_for_request_turn(
+                    request_turn,
+                    timeout_seconds=self.request_turn_wait_timeout_seconds,
+                )
+            except TimeoutError as error:
+                raise AppError(
+                    "request is still in progress, please retry later.",
+                    status_code=HTTPStatus.CONFLICT,
+                    code="request_in_progress",
+                ) from error
+
+            existing_user, existing_assistant = await self._find_existing_turn_by_request_id(conversation_id, request_id)
+            if existing_user and existing_assistant:
+                return existing_user, existing_assistant, None
+
+            raise AppError(
+                "request is still in progress, please retry later.",
+                status_code=HTTPStatus.CONFLICT,
+                code="request_in_progress",
+            )
+
+        existing_user, existing_assistant = await self._find_existing_turn_by_request_id(conversation_id, request_id)
+        if existing_user and existing_assistant:
+            await generation_coordinator.release_request_turn(request_turn)
+            return existing_user, existing_assistant, None
+
+        return existing_user, None, request_turn
 
     def _validate_manual_tool_requests(self, conversation, payload: dict[str, Any]) -> None:
         requests = payload.get("manual_tool_requests", [])
@@ -378,7 +585,18 @@ class MessageService:
                 raise AppError(
                     f"manualToolRequests[{index}] must be an object",
                     status_code=HTTPStatus.UNPROCESSABLE_ENTITY,
-                    code="manual_tool_params_invalid",
+                    code="validation_error",
+                    details={
+                        "source": "manual_tool_requests",
+                        "issues": [
+                            {
+                                "path": f"manualToolRequests[{index}]",
+                                "reason": "must be an object",
+                                "type": "type",
+                                "expected": "object",
+                            }
+                        ],
+                    },
                 )
 
             if request.get("type") != "skill":
@@ -410,7 +628,7 @@ class MessageService:
         assistant_message = next(
             (
                 message
-                for message in messages
+                for message in reversed(messages)
                 if message.role == "assistant"
                 and _message_request_id(message) == request_id
                 and message.created_at >= user_message.created_at
@@ -487,16 +705,12 @@ class MessageService:
         request_id = _extract_request_id(payload)
         request_metadata = _attach_request_id(payload.get("metadata", {}), request_id)
 
+        request_turn: RequestTurnLease | None = None
         user_message = None
         if request_id:
-            existing_user, existing_assistant = await self._find_existing_turn_by_request_id(conversation_id, request_id)
-            if existing_user and existing_assistant:
-                return existing_user, existing_assistant
-            if existing_user and not existing_assistant:
-                waited_user, waited_assistant = await self._wait_existing_turn(conversation_id, request_id)
-                if waited_user and waited_assistant:
-                    return waited_user, waited_assistant
-                user_message = waited_user
+            user_message, assistant_message, request_turn = await self._resolve_request_turn(conversation_id, request_id)
+            if assistant_message is not None:
+                return user_message, assistant_message
 
         if user_message is None:
             user_message = await self.repo.create(
@@ -536,13 +750,7 @@ class MessageService:
                     {"summary": item.summary}
                     for item in conversation.summaries[-2:]
                 ],
-                "long_term_memories": [
-                    {"content": item.content}
-                    for item in await self.memory_repo.search(
-                        persona_id=conversation.persona_id,
-                        memory_scope="persona",
-                    )
-                ][:3],
+                "long_term_memories": await self._load_long_term_memory_context(conversation),
                 "enabled_skills": [
                     {
                         "id": skill.id,
@@ -566,48 +774,53 @@ class MessageService:
             }
         )
 
-        provider = ProviderFactory.from_model_config(conversation.model_config)
-        provider_response = await provider.chat(state["prompt_messages"])
-        assistant_metadata = _build_assistant_metadata(
-            planner_output=state.get("planner_output", {}),
-            tool_results=state.get("tool_results", []),
-            manual_tool_requests=payload.get("manual_tool_requests", []),
-        )
-        assistant_metadata = _attach_request_id(assistant_metadata, request_id)
-        assistant_message = await self.repo.create(
-            {
-                "conversation_id": conversation_id,
-                "role": "assistant",
-                "sender_type": "assistant",
-                "sender_name": conversation.persona.name,
-                "agent_name": "CompanionAgent",
-                "content": provider_response["content"],
-                "metadata_": assistant_metadata,
-            }
-        )
-
-        all_messages = await self.repo.list_by_conversation(conversation_id)
-        if len(all_messages) >= 6:
-            await self.memory_service.summarize(conversation_id=conversation_id, messages=all_messages)
-        if conversation.persona.long_term_memory_enabled:
-            await self.memory_service.create_long_term(
+        try:
+            provider = ProviderFactory.from_model_config(conversation.model_config)
+            try:
+                provider_response = await provider.chat(state["prompt_messages"])
+            except AppError:
+                raise
+            except Exception as error:
+                raise _to_provider_error(error) from error
+            assistant_metadata = _build_assistant_metadata(
+                planner_output=state.get("planner_output", {}),
+                tool_results=state.get("tool_results", []),
+                manual_tool_requests=payload.get("manual_tool_requests", []),
+            )
+            assistant_metadata = _attach_request_id(assistant_metadata, request_id)
+            assistant_message = await self.repo.create(
                 {
                     "conversation_id": conversation_id,
-                    "persona_id": conversation.persona_id,
-                    "memory_scope": "persona",
-                    "content": payload["content"],
-                    "tags": ["chat"],
-                    "metadata": {"source": "user_message"},
+                    "role": "assistant",
+                    "sender_type": "assistant",
+                    "sender_name": conversation.persona.name,
+                    "agent_name": "CompanionAgent",
+                    "content": provider_response["content"],
+                    "metadata_": assistant_metadata,
                 }
             )
-        await self.session.commit()
-        return user_message, assistant_message
+
+            await self._sync_memory_after_turn(
+                conversation=conversation,
+                conversation_id=conversation_id,
+                user_input=payload["content"],
+            )
+            await self.session.commit()
+            return user_message, assistant_message
+        finally:
+            if request_turn is not None:
+                await generation_coordinator.release_request_turn(request_turn)
 
     async def regenerate(self, conversation_id: str):
+        await self.conversation_repo.get_with_relations(conversation_id)
         messages = await self.repo.list_by_conversation(conversation_id)
         last_user = next((message for message in reversed(messages) if message.role == "user"), None)
         if last_user is None:
-            raise AppError("No user message found to regenerate")
+            raise AppError(
+                "No user message found to regenerate",
+                status_code=HTTPStatus.CONFLICT,
+                code="regenerate_not_available",
+            )
         return await self.send_message(
             conversation_id,
             {
@@ -618,6 +831,7 @@ class MessageService:
         )
 
     async def stop_generation(self, conversation_id: str) -> dict:
+        await self.conversation_repo.get_with_relations(conversation_id)
         generation_coordinator.stop(conversation_id)
         return {"stopped": True, "conversationId": conversation_id}
 
@@ -627,24 +841,23 @@ class MessageService:
         request_id = _extract_request_id(payload)
         request_metadata = _attach_request_id(payload.get("metadata", {}), request_id)
 
+        request_turn: RequestTurnLease | None = None
         user_message = None
         if request_id:
-            existing_user, existing_assistant = await self._find_existing_turn_by_request_id(conversation_id, request_id)
-            if existing_user and existing_assistant:
-                existing_metadata = existing_assistant.metadata_ if isinstance(existing_assistant.metadata_, dict) else {}
-                yield StreamEvent(event="message_created", data={"userMessageId": existing_user.id}).model_dump(by_alias=True)
-                yield StreamEvent(
-                    event="final_answer",
-                    data={
-                        "messageId": existing_assistant.id,
-                        "content": existing_assistant.content,
+            user_message, assistant_message, request_turn = await self._resolve_request_turn(conversation_id, request_id)
+            if assistant_message is not None:
+                existing_metadata = assistant_message.metadata_ if isinstance(assistant_message.metadata_, dict) else {}
+                yield _build_stream_event("message_created", {"userMessageId": user_message.id})
+                yield _build_stream_event(
+                    "final_answer",
+                    {
+                        "messageId": assistant_message.id,
+                        "content": assistant_message.content,
                         "toolUsage": existing_metadata.get("toolUsage", {}),
                         "manualToolRequests": existing_metadata.get("manualToolRequests", []),
                     },
-                ).model_dump(by_alias=True)
+                )
                 return
-            if existing_user:
-                user_message = existing_user
 
         if user_message is None:
             user_message = await self.repo.create(
@@ -659,106 +872,113 @@ class MessageService:
                 }
             )
             await self.session.flush()
+        generation_coordinator.begin_stream(conversation_id)
         stop_event = generation_coordinator.new(conversation_id)
-        yield StreamEvent(event="message_created", data={"userMessageId": user_message.id}).model_dump(by_alias=True)
+        try:
+            yield _build_stream_event("message_created", {"userMessageId": user_message.id})
 
-        prepared = await self.graph.prepare(
-            {
-                "conversation_id": conversation_id,
-                "user_input": payload["content"],
-                "persona": {
-                    "name": conversation.persona.name,
-                    "speaking_style": conversation.persona.speaking_style,
-                    "background_story": conversation.persona.background_story,
-                    "system_prompt_template": conversation.persona.system_prompt_template,
+            prepared = await self.graph.prepare(
+                {
+                    "conversation_id": conversation_id,
+                    "user_input": payload["content"],
+                    "persona": {
+                        "name": conversation.persona.name,
+                        "speaking_style": conversation.persona.speaking_style,
+                        "background_story": conversation.persona.background_story,
+                        "system_prompt_template": conversation.persona.system_prompt_template,
+                    },
+                    "model_config": {
+                        "provider": conversation.model_config.provider,
+                        "base_url": conversation.model_config.base_url,
+                        "api_key": conversation.model_config.api_key,
+                        "model": conversation.model_config.model,
+                        "extra_config": conversation.model_config.extra_config,
+                    },
+                    "recent_messages": [
+                        {"role": message.role, "content": message.content}
+                        for message in (await self.repo.list_by_conversation(conversation_id))[-8:]
+                    ],
+                    "summary_memory": [{"summary": item.summary} for item in conversation.summaries[-2:]],
+                    "long_term_memories": await self._load_long_term_memory_context(conversation),
+                    "enabled_skills": [
+                        {
+                            "id": skill.id,
+                            "name": skill.name,
+                            "description": skill.description,
+                        }
+                        for skill in conversation.skills
+                        if skill.enabled
+                    ],
+                    "enabled_mcp_servers": [
+                        {
+                            "id": server.id,
+                            "name": server.name,
+                            "status": server.status,
+                            "description": server.description,
+                        }
+                        for server in conversation.mcp_servers
+                        if server.enabled
+                    ],
+                    "manual_tool_requests": payload.get("manual_tool_requests", []),
+                }
+            )
+
+            for item in prepared.get("stream_events", []):
+                event_name = str(item.get("event") or "").strip()
+                event_data = item.get("data", {})
+                if event_name:
+                    yield _build_stream_event(event_name, event_data if isinstance(event_data, dict) else {})
+
+            provider = ProviderFactory.from_model_config(conversation.model_config)
+            chunks: list[str] = []
+            assistant_metadata = _build_assistant_metadata(
+                planner_output=prepared.get("planner_output", {}),
+                tool_results=prepared.get("tool_results", []),
+                manual_tool_requests=payload.get("manual_tool_requests", []),
+            )
+            assistant_metadata = _attach_request_id(assistant_metadata, request_id)
+            try:
+                async for chunk in provider.stream_chat(prepared["prompt_messages"]):
+                    if stop_event.is_set():
+                        yield _build_stream_event("stopped", {"conversationId": conversation_id})
+                        await self.session.commit()
+                        return
+                    token = chunk.get("content", "")
+                    if token:
+                        chunks.append(token)
+                        yield _build_stream_event("token", {"content": token})
+            except AppError:
+                raise
+            except Exception as error:
+                raise _to_provider_error(error) from error
+
+            assistant_message = await self.repo.create(
+                {
+                    "conversation_id": conversation_id,
+                    "role": "assistant",
+                    "sender_type": "assistant",
+                    "sender_name": conversation.persona.name,
+                    "agent_name": "CompanionAgent",
+                    "content": "".join(chunks),
+                    "metadata_": assistant_metadata,
+                }
+            )
+            await self._sync_memory_after_turn(
+                conversation=conversation,
+                conversation_id=conversation_id,
+                user_input=payload["content"],
+            )
+            await self.session.commit()
+            yield _build_stream_event(
+                "final_answer",
+                {
+                    "messageId": assistant_message.id,
+                    "content": assistant_message.content,
+                    "toolUsage": assistant_metadata["toolUsage"],
+                    "manualToolRequests": assistant_metadata["manualToolRequests"],
                 },
-                "model_config": {
-                    "provider": conversation.model_config.provider,
-                    "base_url": conversation.model_config.base_url,
-                    "api_key": conversation.model_config.api_key,
-                    "model": conversation.model_config.model,
-                    "extra_config": conversation.model_config.extra_config,
-                },
-                "recent_messages": [
-                    {"role": message.role, "content": message.content}
-                    for message in (await self.repo.list_by_conversation(conversation_id))[-8:]
-                ],
-                "summary_memory": [
-                    {"summary": item.summary}
-                    for item in conversation.summaries[-2:]
-                ],
-                "long_term_memories": [
-                    {"content": item.content}
-                    for item in await self.memory_repo.search(
-                        persona_id=conversation.persona_id,
-                        memory_scope="persona",
-                    )
-                ][:3],
-                "enabled_skills": [
-                    {
-                        "id": skill.id,
-                        "name": skill.name,
-                        "description": skill.description,
-                    }
-                    for skill in conversation.skills
-                    if skill.enabled
-                ],
-                "enabled_mcp_servers": [
-                    {
-                        "id": server.id,
-                        "name": server.name,
-                        "status": server.status,
-                        "description": server.description,
-                    }
-                    for server in conversation.mcp_servers
-                    if server.enabled
-                ],
-                "manual_tool_requests": payload.get("manual_tool_requests", []),
-            }
-        )
-
-        for item in prepared.get("stream_events", []):
-            yield StreamEvent(event=item["event"], data=item["data"]).model_dump(by_alias=True)
-
-        provider = ProviderFactory.from_model_config(conversation.model_config)
-        chunks: list[str] = []
-        assistant_metadata = _build_assistant_metadata(
-            planner_output=prepared.get("planner_output", {}),
-            tool_results=prepared.get("tool_results", []),
-            manual_tool_requests=payload.get("manual_tool_requests", []),
-        )
-        assistant_metadata = _attach_request_id(assistant_metadata, request_id)
-        async for chunk in provider.stream_chat(prepared["prompt_messages"]):
-            if stop_event.is_set():
-                yield StreamEvent(event="stopped", data={"conversationId": conversation_id}).model_dump(by_alias=True)
-                generation_coordinator.clear(conversation_id)
-                await self.session.commit()
-                return
-            token = chunk.get("content", "")
-            if token:
-                chunks.append(token)
-                yield StreamEvent(event="token", data={"content": token}).model_dump(by_alias=True)
-
-        assistant_message = await self.repo.create(
-            {
-                "conversation_id": conversation_id,
-                "role": "assistant",
-                "sender_type": "assistant",
-                "sender_name": conversation.persona.name,
-                "agent_name": "CompanionAgent",
-                "content": "".join(chunks),
-                "metadata_": assistant_metadata,
-            }
-        )
-        await self.session.commit()
-        generation_coordinator.clear(conversation_id)
-        yield StreamEvent(
-            event="final_answer",
-            data={
-                "messageId": assistant_message.id,
-                "content": assistant_message.content,
-                "toolUsage": assistant_metadata["toolUsage"],
-                "manualToolRequests": assistant_metadata["manualToolRequests"],
-            },
-        ).model_dump(by_alias=True)
-
+            )
+        finally:
+            generation_coordinator.end_stream(conversation_id)
+            if request_turn is not None:
+                await generation_coordinator.release_request_turn(request_turn)

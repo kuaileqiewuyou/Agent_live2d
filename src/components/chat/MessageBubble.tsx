@@ -49,6 +49,7 @@ interface ToolReference {
   title?: string
   summary?: string
   result?: string
+  error?: string
   manual?: boolean
   inputText?: string
   inputParams?: ManualToolInputParams
@@ -162,7 +163,7 @@ function ToolStatusBadge({ status }: { status: Message['toolStatus'] }) {
       return (
         <Badge variant="destructive" className="gap-1">
           <AlertTriangle className="h-3 w-3" />
-          失败
+          失败（可继续）
         </Badge>
       )
     default:
@@ -212,6 +213,13 @@ function getToolReferenceLabel(reference: ToolReference) {
 function getToolReferences(message: Message): ToolReference[] {
   const raw = message.metadata?.toolResults
   return Array.isArray(raw) ? raw as ToolReference[] : []
+}
+
+function getToolReferenceSummary(reference: ToolReference) {
+  if (reference.error) {
+    return reference.summary || reference.error || 'Tool 执行失败，已继续后续流程。'
+  }
+  return reference.summary || reference.result || '结果已纳入本轮回复。'
 }
 
 function getToolUsage(message: Message): ToolUsageMeta | null {
@@ -325,7 +333,7 @@ function ToolReferenceSummary({ references, manualToolRequests }: ToolReferenceS
       <CollapsibleTrigger asChild>
         <button className="mt-3 flex items-center gap-1 text-left text-xs text-(--color-muted-foreground) opacity-80 transition-opacity hover:opacity-100">
           {open ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
-          <span>Tool usage: manual {manualLabels.length} / automatic {automaticLabels.length}</span>
+          <span>Tool 使用：手动 {manualLabels.length} / 自动 {automaticLabels.length}</span>
         </button>
       </CollapsibleTrigger>
       <CollapsibleContent>
@@ -333,7 +341,7 @@ function ToolReferenceSummary({ references, manualToolRequests }: ToolReferenceS
           {manualLabels.length > 0 && (
             <div className="rounded-lg border border-(--color-border) bg-(--color-background)/70 p-2">
               <div className="mb-1 flex items-center gap-2 text-xs font-medium">
-                <Badge variant="secondary">manual Tool</Badge>
+                <Badge variant="secondary">手动 Tool</Badge>
                 <span className="text-(--color-muted-foreground)">{manualLabels.length}</span>
               </div>
               <div className="mb-2 flex flex-wrap gap-1.5">
@@ -353,7 +361,7 @@ function ToolReferenceSummary({ references, manualToolRequests }: ToolReferenceS
                           <ToolTypeBadge type={item.type} />
                         </div>
                         <div className="mt-1 text-xs text-(--color-muted-foreground)">
-                          {item.summary || item.result || '结果已纳入本轮回复。'}
+                          {getToolReferenceSummary(item)}
                         </div>
                         <ToolInputParamsBlock
                           params={item.inputParams || request?.inputParams}
@@ -369,7 +377,7 @@ function ToolReferenceSummary({ references, manualToolRequests }: ToolReferenceS
                   {manualToolRequests.map((item, index) => (
                     <div key={`manual-request-${item.type || 'tool'}-${item.label || index}`} className="rounded-md bg-(--color-muted)/40 px-2 py-1.5">
                       <div className="flex flex-wrap items-center gap-2">
-                        <span className="text-xs font-medium">{normalizeToolLabel(item.label) || 'manual Tool'}</span>
+                        <span className="text-xs font-medium">{normalizeToolLabel(item.label) || '手动 Tool'}</span>
                         <ToolTypeBadge type={item.type} />
                       </div>
                       <ToolInputParamsBlock params={item.inputParams} inputText={item.inputText} />
@@ -383,7 +391,7 @@ function ToolReferenceSummary({ references, manualToolRequests }: ToolReferenceS
           {automaticReferences.length > 0 && (
             <div className="rounded-lg border border-(--color-border) bg-(--color-background)/70 p-2">
               <div className="mb-1 flex items-center gap-2 text-xs font-medium">
-                <Badge variant="outline">automatic Tool</Badge>
+                <Badge variant="outline">自动 Tool</Badge>
                 <span className="text-(--color-muted-foreground)">{automaticReferences.length}</span>
               </div>
               <div className="flex flex-col gap-1.5">
@@ -394,7 +402,7 @@ function ToolReferenceSummary({ references, manualToolRequests }: ToolReferenceS
                       <ToolTypeBadge type={item.type} />
                     </div>
                     <div className="mt-1 text-xs text-(--color-muted-foreground)">
-                      {item.summary || item.result || '结果已纳入本轮回复。'}
+                      {getToolReferenceSummary(item)}
                     </div>
                   </div>
                 ))}
@@ -455,6 +463,15 @@ export function MessageBubble({ message, layoutMode }: MessageBubbleProps) {
     ].filter(Boolean))),
     [manualToolRequests, toolReferences],
   )
+  const automaticToolLabels = useMemo(
+    () => Array.from(new Set(
+      toolReferences
+        .filter(item => !item.manual)
+        .map(getToolReferenceLabel)
+        .filter(Boolean),
+    )),
+    [toolReferences],
+  )
 
   const hasManualToolReferences = manualToolCount > 0 || manualToolRequests.length > 0
   const hasAutomaticToolReferences = automaticToolCount > 0
@@ -479,10 +496,16 @@ export function MessageBubble({ message, layoutMode }: MessageBubbleProps) {
     const displayLabel = typeof message.metadata?.label === 'string'
       ? message.metadata.label
       : (typeof message.metadata?.name === 'string' ? message.metadata.name : undefined)
+    const errorDetail = typeof message.metadata?.error === 'string'
+      ? message.metadata.error
+      : undefined
+    const fallbackSummary = message.toolStatus === 'error'
+      ? (errorDetail || 'Tool 执行失败，已继续后续流程。')
+      : '结果已纳入本轮回复。'
     const title = normalizeToolLabel(displayLabel || message.toolName || String(message.metadata?.title || '')) || 'Tool 调用'
     const summary = typeof message.metadata?.summary === 'string'
       ? message.metadata.summary
-      : message.content
+      : fallbackSummary
 
     return (
       <div className="flex justify-start px-4 py-1.5">
@@ -502,7 +525,7 @@ export function MessageBubble({ message, layoutMode }: MessageBubbleProps) {
                   <ToolStatusBadge status={message.toolStatus} />
                 </div>
                 <div className="mt-1 text-xs text-(--color-muted-foreground)">
-                  {summary}
+                  {summary || fallbackSummary}
                 </div>
                 {message.senderName && (
                   <div className="mt-1 text-[11px] text-(--color-muted-foreground)/80">
@@ -641,7 +664,7 @@ export function MessageBubble({ message, layoutMode }: MessageBubbleProps) {
                 <div className="mb-2 flex flex-wrap items-center gap-2">
                   <Badge variant="secondary" className="gap-1">
                     <Wrench className="h-3 w-3" />
-                    本轮按你指定调用了 {manualToolCount} 个 manual Tool
+                    本轮按你指定调用了 {manualToolCount} 个手动 Tool
                   </Badge>
                   {manualToolLabels.slice(0, 3).map(label => (
                     <Badge key={label} variant="outline">
@@ -654,8 +677,13 @@ export function MessageBubble({ message, layoutMode }: MessageBubbleProps) {
                 <div className="mb-2 flex flex-wrap items-center gap-2">
                   <Badge variant="outline" className="gap-1">
                     <Wrench className="h-3 w-3" />
-                    本轮自动调用了 {automaticToolCount} 个 automatic Tool
+                    本轮自动调用了 {automaticToolCount} 个自动 Tool
                   </Badge>
+                  {automaticToolLabels.slice(0, 3).map(label => (
+                    <Badge key={`auto-${label}`} variant="outline">
+                      {label}
+                    </Badge>
+                  ))}
                 </div>
               )}
               {assistantContent}

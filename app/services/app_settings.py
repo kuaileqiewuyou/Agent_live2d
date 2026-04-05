@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 from pathlib import Path
+import time
 from typing import ClassVar
 
 from app.config import get_settings
@@ -12,6 +13,8 @@ logger = logging.getLogger(__name__)
 
 class AppSettingsService:
     _lock: ClassVar[asyncio.Lock] = asyncio.Lock()
+    _replace_retry_count: ClassVar[int] = 5
+    _replace_retry_delay_sec: ClassVar[float] = 0.03
 
     def __init__(self) -> None:
         settings = get_settings()
@@ -55,7 +58,15 @@ class AppSettingsService:
         def _write() -> None:
             self.file_path.parent.mkdir(parents=True, exist_ok=True)
             temp_path.write_text(content, "utf-8")
-            temp_path.replace(self.file_path)
+            for attempt in range(self._replace_retry_count):
+                try:
+                    temp_path.replace(self.file_path)
+                    return
+                except PermissionError:
+                    if attempt >= self._replace_retry_count - 1:
+                        raise
+                    # Windows may briefly lock the target file (e.g. AV/indexing).
+                    time.sleep(self._replace_retry_delay_sec * (attempt + 1))
 
         await asyncio.to_thread(_write)
 

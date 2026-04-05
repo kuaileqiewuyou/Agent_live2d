@@ -1,4 +1,5 @@
 import { apiRequest, isMockMode } from '@/api'
+import { isNetworkError, normalizeRequestError } from '@/api/errors'
 import type { AppSettings } from '@/types'
 import { DEFAULT_SETTINGS } from '@/constants'
 
@@ -51,11 +52,23 @@ async function updateSettings(data: Partial<AppSettings>): Promise<AppSettings> 
     return { ...settings }
   }
 
-  const res = await apiRequest<AppSettings>('/api/settings', {
-    method: 'PATCH',
-    body: JSON.stringify(data),
-  })
-  setSettingsCache({ ...DEFAULT_SETTINGS, ...res.data })
+  try {
+    const res = await apiRequest<AppSettings>('/api/settings', {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    })
+    setSettingsCache({ ...DEFAULT_SETTINGS, ...res.data })
+  }
+  catch (error) {
+    if (isNetworkError(error)) {
+      // Keep settings editable when backend is temporarily offline.
+      setSettingsCache({ ...settings, ...data })
+      return { ...settings }
+    }
+
+    throw normalizeRequestError(error)
+  }
+
   return { ...settings }
 }
 

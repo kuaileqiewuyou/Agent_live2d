@@ -477,7 +477,10 @@ npm run smoke:backend
 
 - `POST /messages` 返回 `userMessage + assistantMessage` 双消息结构
 - 前端接入时应同时更新消息 store，保留完整对话轮次
-- SSE 事件包括 `message_created`、`thinking`、`tool_calling`、`token`、`final_answer`、`stopped`
+- SSE 事件包括 `message_created`、`thinking`、`tool_calling`、`tool_result`、`memory_sync`、`token`、`final_answer`、`stopped`
+- 核心 SSE 事件 payload 默认附带 `live2dState`（`idle` / `thinking` / `talking` / `error`），前端应优先使用该字段；缺失时再按事件类型推断
+- 双聊天模式（`chat` / `companion`）共用同一消息发送链路，切换模式不影响 stream/stop/regenerate 行为
+- 前端文案策略以中文为主，专业术语保持英文（如 `Skill`、`MCP`、`Persona`、`Model Config`）
 
 ## 记忆系统说明
 

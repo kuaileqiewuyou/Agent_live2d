@@ -3,6 +3,7 @@ export type MessageStatus = 'sending' | 'streaming' | 'done' | 'error'
 export type ToolStatus = 'calling' | 'success' | 'error'
 export type ManualToolType = 'skill' | 'mcp'
 export type ManualToolParamType = 'string' | 'number' | 'boolean' | 'enum'
+export type ManualToolFailureReason = 'not_enabled' | 'invalid_params' | 'execution_error' | 'unknown'
 
 export interface MessageAttachment {
   id: string
@@ -31,6 +32,16 @@ export interface ManualToolRequest {
   requiredFields?: string[]
   fieldTypes?: Record<string, ManualToolParamType>
   fieldOptions?: Record<string, string[]>
+}
+
+export interface ManualToolFailureHint {
+  type: ManualToolType
+  label: string
+  targetId?: string
+  summary?: string
+  reason?: ManualToolFailureReason
+  inputText?: string
+  inputParams?: ManualToolInputParams
 }
 
 export interface Message {

@@ -1,4 +1,4 @@
-export type Live2DState = 'idle' | 'talking' | 'thinking' | 'happy' | 'sad'
+export type Live2DState = 'idle' | 'talking' | 'thinking' | 'happy' | 'sad' | 'error'
 
 export interface Live2DModel {
   id: string

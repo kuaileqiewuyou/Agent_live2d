@@ -7,13 +7,16 @@ Release smoke steps:
 1. python -m pytest -q
 2. npm run test:unit
 3. npm run test:e2e
-4. docker compose up --build -d app qdrant
-5. GET http://127.0.0.1:18001/api/health
-6. docker compose down
+4. npm run smoke:startup
+5. npm run tauri:dev:check
+6. docker compose up --build -d app qdrant
+7. GET http://127.0.0.1:18001/api/health
+8. docker compose down
 
 Usage:
   npm run smoke:release
   npm run smoke:release -- --skip-e2e
+  npm run smoke:release -- --skip-desktop-check
   npm run smoke:release -- --help
 `.trim()
 
@@ -91,6 +94,7 @@ async function main() {
   }
 
   const skipE2E = args.has('--skip-e2e')
+  const skipDesktopCheck = args.has('--skip-desktop-check')
   const smokeAppPort = process.env.SMOKE_APP_PORT ?? '18001'
   const smokeDatabaseUrl = process.env.SMOKE_DATABASE_URL ?? 'sqlite+aiosqlite:///./data/release_smoke.db'
   const dockerEnv = {
@@ -102,25 +106,36 @@ async function main() {
   let dockerStarted = false
 
   try {
-    console.log('\n[1/6] Running backend tests')
+    console.log('\n[1/8] Running backend tests')
     await run('python', ['-m', 'pytest', '-q'])
 
-    console.log('\n[2/6] Running frontend unit tests')
+    console.log('\n[2/8] Running frontend unit tests')
     await run(process.platform === 'win32' ? 'npm.cmd' : 'npm', ['run', 'test:unit'])
 
     if (skipE2E) {
-      console.log('\n[3/6] Skipped E2E tests (--skip-e2e)')
+      console.log('\n[3/8] Skipped E2E tests (--skip-e2e)')
     }
     else {
-      console.log('\n[3/6] Running frontend E2E tests')
+      console.log('\n[3/8] Running frontend E2E tests')
       await run(process.platform === 'win32' ? 'npm.cmd' : 'npm', ['run', 'test:e2e'])
     }
 
-    console.log('\n[4/6] Starting Docker services (app + qdrant)')
+    console.log('\n[4/8] Running startup fallback smoke')
+    await run(process.platform === 'win32' ? 'npm.cmd' : 'npm', ['run', 'smoke:startup'])
+
+    if (skipDesktopCheck) {
+      console.log('\n[5/8] Skipped desktop preflight check (--skip-desktop-check)')
+    }
+    else {
+      console.log('\n[5/8] Running desktop preflight check (tauri:dev:check)')
+      await run(process.platform === 'win32' ? 'npm.cmd' : 'npm', ['run', 'tauri:dev:check'])
+    }
+
+    console.log('\n[6/8] Starting Docker services (app + qdrant)')
     await run('docker', ['compose', 'up', '--build', '-d', 'app', 'qdrant'], { env: dockerEnv })
     dockerStarted = true
 
-    console.log('\n[5/6] Checking backend health')
+    console.log('\n[7/8] Checking backend health')
     try {
       await waitForHealth(healthUrl)
     }
@@ -129,7 +144,7 @@ async function main() {
       throw error
     }
 
-    console.log('\n[6/6] Stopping Docker services')
+    console.log('\n[8/8] Stopping Docker services')
     await run('docker', ['compose', 'down'], { env: dockerEnv })
 
     console.log('\nRelease smoke completed successfully.')

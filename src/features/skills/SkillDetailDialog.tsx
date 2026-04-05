@@ -1,4 +1,4 @@
-import {
+﻿import {
   BarChart3,
   BookOpen,
   Code,
@@ -42,7 +42,7 @@ const ICON_COLOR_MAP: Record<string, string> = {
 
 const SCOPE_LABELS: Record<string, string> = {
   conversation: '对话',
-  agent: '智能体',
+  agent: 'Agent',
 }
 
 interface SkillDetailDialogProps {
@@ -82,7 +82,7 @@ export function SkillDetailDialog({
             <div>
               <DialogTitle className="text-base">{skill.name}</DialogTitle>
               <DialogDescription className="mt-0.5 text-xs">
-                v{skill.version} · {skill.author}
+                v{skill.version} - {skill.author}
               </DialogDescription>
             </div>
           </div>

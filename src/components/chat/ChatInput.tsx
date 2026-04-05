@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, type KeyboardEvent, useState } from 'react'
 import {
+  AlertTriangle,
   Bot,
   Cable,
   Cpu,
@@ -13,17 +14,21 @@ import {
   Wrench,
   Zap,
 } from 'lucide-react'
-import type { MCPServer, ManualToolRequest, Skill } from '@/types'
+import type { MCPServer, ManualToolFailureHint, ManualToolRequest, Skill } from '@/types'
 import { cn } from '@/utils'
 import { Button } from '@/components/ui/button'
 import { ChatToolPanel } from '@/components/chat/ChatToolPanel'
 import {
+  buildManualToolBackendValidationHint,
+  buildManualToolValidationErrorMessage,
   buildToolFallbackContent,
+  formatManualToolBackendValidationIssue,
   getComposerDraftForConversation,
   getInvalidTypedParams,
   getMissingRequiredParams,
   getToolDraftForConversation,
   hasToolParams,
+  parseManualToolBackendValidationIssues,
   persistComposerDraftForConversation,
   persistToolDraftForConversation,
 } from '@/components/chat/toolDraft'
@@ -34,6 +39,7 @@ import {
   TooltipTrigger,
 } from '@/components/ui/tooltip'
 import { useNotificationStore } from '@/stores'
+import { useBackendHealth } from '@/hooks'
 
 interface SendOptions {
   manualToolRequests?: ManualToolRequest[]
@@ -53,6 +59,11 @@ interface ChatInputProps {
   mcpCount?: number
   enabledSkills?: Skill[]
   enabledMcpServers?: MCPServer[]
+  recentToolFailures?: ManualToolFailureHint[]
+  backendValidationMessage?: string | null
+  onOpenConversationSettings?: () => void
+  onOpenMcpCenter?: () => void
+  isContextLoading?: boolean
   placeholder?: string
 }
 
@@ -66,18 +77,53 @@ export function ChatInput({
   isSending,
   personaName,
   modelName,
-  skillCount = 0,
-  mcpCount = 0,
+  skillCount,
+  mcpCount,
   enabledSkills = [],
   enabledMcpServers = [],
+  recentToolFailures = [],
+  backendValidationMessage = null,
+  onOpenConversationSettings,
+  onOpenMcpCenter,
+  isContextLoading = false,
   placeholder = '输入消息...',
 }: ChatInputProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const pushNotification = useNotificationStore((state) => state.push)
+  const {
+    isReachable: isBackendReachable,
+    hasChecked: hasBackendChecked,
+    checking: isBackendChecking,
+    lastCheckedAt,
+    retry: retryBackendHealth,
+  } = useBackendHealth()
   const [toolPanelOpen, setToolPanelOpen] = useState(false)
   const [selectedRequests, setSelectedRequests] = useState<ManualToolRequest[]>([])
   const [composerText, setComposerText] = useState('')
   const [hydratedConversationId, setHydratedConversationId] = useState<string | null>(null)
+
+  const enabledSkillIds = useMemo(
+    () => new Set(enabledSkills.map(skill => skill.id)),
+    [enabledSkills],
+  )
+  const enabledMcpIds = useMemo(
+    () => new Set(enabledMcpServers.map(server => server.id)),
+    [enabledMcpServers],
+  )
+
+  const filterUnavailableRequests = useCallback((requests: ManualToolRequest[]) => {
+    const hasAvailabilityCatalog = enabledSkillIds.size > 0 || enabledMcpIds.size > 0
+    const canInferNoEnabledTools = skillCount === 0 && mcpCount === 0
+    if (!hasAvailabilityCatalog && !canInferNoEnabledTools) {
+      return requests
+    }
+
+    return requests.filter((request) => {
+      if (request.type === 'skill') return enabledSkillIds.has(request.targetId)
+      if (request.type === 'mcp') return enabledMcpIds.has(request.targetId)
+      return false
+    })
+  }, [enabledMcpIds, enabledSkillIds, mcpCount, skillCount])
 
   useEffect(() => {
     if (!conversationId) {
@@ -86,6 +132,7 @@ export function ChatInput({
       setHydratedConversationId(null)
       return
     }
+
     const nextToolDraft = getToolDraftForConversation(conversationId)
     const nextComposerDraft = getComposerDraftForConversation(conversationId)
     setSelectedRequests(nextToolDraft)
@@ -97,6 +144,22 @@ export function ChatInput({
     if (!conversationId || hydratedConversationId !== conversationId) return
     persistToolDraftForConversation(conversationId, selectedRequests)
   }, [conversationId, hydratedConversationId, selectedRequests])
+
+  useEffect(() => {
+    if (!conversationId || hydratedConversationId !== conversationId) return
+    if (isContextLoading) return
+
+    const filtered = filterUnavailableRequests(selectedRequests)
+    if (filtered.length === selectedRequests.length) return
+
+    setSelectedRequests(filtered)
+  }, [
+    conversationId,
+    filterUnavailableRequests,
+    hydratedConversationId,
+    isContextLoading,
+    selectedRequests,
+  ])
 
   useEffect(() => {
     if (!conversationId || hydratedConversationId !== conversationId) return
@@ -139,28 +202,83 @@ export function ChatInput({
       .filter(item => item.invalid.length > 0),
     [selectedRequests],
   )
+  const backendValidationIssues = useMemo(
+    () => parseManualToolBackendValidationIssues(backendValidationMessage || ''),
+    [backendValidationMessage],
+  )
+  const backendValidationHint = useMemo(
+    () => buildManualToolBackendValidationHint(backendValidationMessage || ''),
+    [backendValidationMessage],
+  )
 
   const helperText = useMemo(() => {
     if (selectedRequests.length === 0) return null
 
     const missingCount = requestsWithMissingRequired.length
     const invalidCount = requestsWithInvalidTyped.length
-    const base = `已选择 ${selectedRequests.length} 个 Tool（${selectedInputCount} 个带参数）`
+    const base = `已选择 ${selectedRequests.length} 个 Tool，${selectedInputCount} 个带参数`
+
     if (missingCount > 0) {
-      return `${base}；${missingCount} 个缺少必填参数。`
+      return `${base}，${missingCount} 个缺少必填参数。`
     }
     if (invalidCount > 0) {
-      return `${base}；${invalidCount} 个参数类型不正确。`
+      return `${base}，${invalidCount} 个参数类型不正确。`
     }
     return `${base}；未输入消息时会自动生成一条兜底指令。`
   }, [requestsWithInvalidTyped.length, requestsWithMissingRequired.length, selectedInputCount, selectedRequests.length])
+
+  const toolValidationStatus = useMemo(() => {
+    if (selectedRequests.length === 0) return null
+
+    const missingCount = requestsWithMissingRequired.length
+    const invalidCount = requestsWithInvalidTyped.length
+
+    if (missingCount > 0) {
+      return {
+        tone: 'error' as const,
+        text: `Tool 参数未完成：${missingCount} 个 Tool 缺少必填项`,
+      }
+    }
+
+    if (invalidCount > 0) {
+      return {
+        tone: 'warn' as const,
+        text: `Tool 参数类型错误：${invalidCount} 个 Tool 需要修正`,
+      }
+    }
+
+    return {
+      tone: 'ok' as const,
+      text: 'Tool 参数已通过校验，可直接发送（消息留空时会自动生成兜底指令）',
+    }
+  }, [requestsWithInvalidTyped.length, requestsWithMissingRequired.length, selectedRequests.length])
+
+  const hasBlockingToolValidationIssue = selectedRequests.length > 0
+    && (requestsWithMissingRequired.length > 0 || requestsWithInvalidTyped.length > 0)
+  const showBackendOffline = hasBackendChecked && !isBackendReachable
+  const sendDisabled = hasBlockingToolValidationIssue || showBackendOffline
+
+  const backendCheckedAtText = useMemo(() => {
+    if (!lastCheckedAt) return '未检查'
+    return new Date(lastCheckedAt).toLocaleTimeString('zh-CN', {
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+    })
+  }, [lastCheckedAt])
 
   const handleSend = useCallback((overrides?: {
     content?: string
     manualToolRequests?: ManualToolRequest[]
   }) => {
-    const element = textareaRef.current
-    if (!element) return
+    if (showBackendOffline) {
+      pushNotification({
+        type: 'error',
+        title: '后端暂不可达',
+        description: '消息发送已暂停，请先点击“重试连接”恢复后端连接。',
+      })
+      return
+    }
 
     const manualToolRequests = overrides?.manualToolRequests ?? selectedRequests
     const missingRequired = manualToolRequests
@@ -171,20 +289,27 @@ export function ChatInput({
       .filter(item => item.invalid.length > 0)
 
     if (missingRequired.length > 0) {
+      const validationMessage = manualToolRequests
+        .map((request, index) => buildManualToolValidationErrorMessage(request, index))
+        .find((item): item is string => Boolean(item))
       setToolPanelOpen(true)
       pushNotification({
         type: 'error',
         title: 'Tool 参数不完整',
-        description: `${missingRequired.length} 个 Tool 缺少必填参数，请先补充后再发送。`,
+        description: validationMessage || `${missingRequired.length} 个 Tool 缺少必填参数，请先补全后再发送。`,
       })
       return
     }
+
     if (invalidTyped.length > 0) {
+      const validationMessage = manualToolRequests
+        .map((request, index) => buildManualToolValidationErrorMessage(request, index))
+        .find((item): item is string => Boolean(item))
       setToolPanelOpen(true)
       pushNotification({
         type: 'error',
         title: 'Tool 参数格式错误',
-        description: `${invalidTyped.length} 个 Tool 的参数类型不正确，请修正后再发送。`,
+        description: validationMessage || `${invalidTyped.length} 个 Tool 的参数类型不正确，请修正后再发送。`,
       })
       return
     }
@@ -198,9 +323,8 @@ export function ChatInput({
     })
 
     clearComposer()
-    setSelectedRequests([])
     setToolPanelOpen(false)
-  }, [clearComposer, composerText, conversationTitle, isSending, onSend, pushNotification, selectedRequests])
+  }, [clearComposer, composerText, conversationTitle, isSending, onSend, pushNotification, selectedRequests, showBackendOffline])
 
   const handleQuickSend = useCallback((request: ManualToolRequest, defaultContent: string) => {
     const currentDraft = composerText.trim()
@@ -232,13 +356,13 @@ export function ChatInput({
             {modelName}
           </span>
         )}
-        {skillCount > 0 && (
+        {(skillCount ?? 0) > 0 && (
           <span className="flex items-center gap-1">
             <Zap className="h-3 w-3" />
             {skillCount} 个 Skill
           </span>
         )}
-        {mcpCount > 0 && (
+        {(mcpCount ?? 0) > 0 && (
           <span className="flex items-center gap-1">
             <Cable className="h-3 w-3" />
             {mcpCount} 个 MCP
@@ -252,11 +376,15 @@ export function ChatInput({
             skills={enabledSkills}
             mcpServers={enabledMcpServers}
             selectedRequests={selectedRequests}
+            recentToolFailures={recentToolFailures}
+            backendValidationIssues={backendValidationIssues}
             conversationTitle={conversationTitle}
             personaName={personaName}
             disabled={isSending}
             onChange={setSelectedRequests}
             onQuickSend={handleQuickSend}
+            onOpenConversationSettings={onOpenConversationSettings}
+            onOpenMcpCenter={onOpenMcpCenter}
           />
         )}
 
@@ -268,15 +396,15 @@ export function ChatInput({
                   variant={toolPanelOpen ? 'secondary' : 'ghost'}
                   size="icon"
                   className="h-8 w-8 text-(--color-muted-foreground)"
-                  aria-label="打开工具面板"
+                  aria-label="打开 Tool Panel"
                   onClick={() => setToolPanelOpen(current => !current)}
-                  disabled={isSending || !hasTools}
+                  disabled={isSending || !hasTools || showBackendOffline}
                 >
                   <Wrench className="h-4 w-4" />
                 </Button>
               </TooltipTrigger>
               <TooltipContent>
-                <p>打开工具面板</p>
+                <p>打开 Tool Panel</p>
               </TooltipContent>
             </Tooltip>
           </TooltipProvider>
@@ -320,6 +448,30 @@ export function ChatInput({
         </div>
 
         <div className="relative flex-1">
+          {showBackendOffline && (
+            <div className="mb-2 flex items-center justify-between gap-3 rounded-lg border border-amber-300/60 bg-amber-50/90 px-3 py-2 text-xs text-amber-900">
+              <div className="min-w-0">
+                <div className="flex items-center gap-1.5">
+                  <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+                  <span className="truncate">后端连接异常，发送已暂停</span>
+                </div>
+                <div className="mt-0.5 text-[11px] text-amber-800/90">
+                  最近检查：{backendCheckedAtText}
+                </div>
+              </div>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                className="h-7 shrink-0 border-amber-300 bg-amber-100/80 px-2 text-[11px] text-amber-900 hover:bg-amber-200"
+                disabled={isBackendChecking}
+                onClick={() => void retryBackendHealth()}
+              >
+                {isBackendChecking ? '检查中...' : '重试连接'}
+              </Button>
+            </div>
+          )}
+
           <textarea
             ref={textareaRef}
             aria-label="聊天输入框"
@@ -339,6 +491,43 @@ export function ChatInput({
 
           {selectedRequests.length > 0 && (
             <>
+              {backendValidationHint && (
+                <div className="mb-2 rounded-lg border border-amber-400/40 bg-amber-500/10 px-2.5 py-1.5 text-[11px] text-amber-800">
+                  <div className="font-medium">{backendValidationHint}</div>
+                  <div className="mt-0.5">
+                    {backendValidationIssues.slice(0, 3).map((issue, index) => (
+                      <span key={`${issue.requestIndex}-${issue.field}-${index}`} className="mr-2 inline-block">
+                        {formatManualToolBackendValidationIssue(issue)}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {toolValidationStatus && (
+                <div
+                  className={cn(
+                    'mb-2 flex items-center justify-between gap-2 rounded-lg border px-2.5 py-1.5 text-[11px]',
+                    toolValidationStatus.tone === 'error' && 'border-(--color-destructive)/40 bg-(--color-destructive)/10 text-(--color-destructive)',
+                    toolValidationStatus.tone === 'warn' && 'border-amber-400/40 bg-amber-500/10 text-amber-700',
+                    toolValidationStatus.tone === 'ok' && 'border-emerald-400/40 bg-emerald-500/10 text-emerald-700',
+                  )}
+                >
+                  <span className="min-w-0 truncate">{toolValidationStatus.text}</span>
+                  {toolValidationStatus.tone !== 'ok' && (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      className="h-6 shrink-0 px-2 text-[11px]"
+                      onClick={() => setToolPanelOpen(true)}
+                    >
+                      去修正
+                    </Button>
+                  )}
+                </div>
+              )}
+
               <div className="mt-2 flex flex-wrap gap-2">
                 {selectedRequests.map(request => {
                   const missingRequired = getMissingRequiredParams(request)
@@ -392,6 +581,7 @@ export function ChatInput({
                     className="h-8 w-8 text-(--color-muted-foreground)"
                     aria-label="重新生成上一条回复"
                     onClick={onRegenerate}
+                    disabled={showBackendOffline}
                   >
                     <RefreshCw className="h-4 w-4" />
                   </Button>
@@ -429,14 +619,27 @@ export function ChatInput({
                   <Button
                     size="icon"
                     className="h-9 w-9 rounded-xl"
-                    aria-label="发送消息"
+                    aria-label={
+                      showBackendOffline
+                        ? '后端离线，暂不可发送'
+                        : hasBlockingToolValidationIssue
+                          ? 'Tool 参数未完成，暂不可发送'
+                          : '发送消息'
+                    }
+                    disabled={sendDisabled}
                     onClick={() => handleSend()}
                   >
                     <Send className="h-4 w-4" />
                   </Button>
                 </TooltipTrigger>
                 <TooltipContent>
-                  <p>发送消息</p>
+                  <p>
+                    {showBackendOffline
+                      ? '后端离线，请先点击“重试连接”'
+                      : hasBlockingToolValidationIssue
+                        ? '请先修正 Tool 参数后再发送'
+                        : '发送消息'}
+                  </p>
                 </TooltipContent>
               </Tooltip>
             </TooltipProvider>

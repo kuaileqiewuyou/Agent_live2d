@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
+import { useEffect, useRef, useState } from 'react'
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { Brain, Cable, MoreHorizontal, Pencil, Pin, Sparkles, Trash2 } from 'lucide-react'
 import { cn, formatTime } from '@/utils'
 import { conversationService, memoryService } from '@/services'
@@ -24,6 +24,7 @@ const CONVERSATION_META_UPDATED_EVENT = 'conversation-meta-updated'
 export function ConversationList({ collapsed }: ConversationListProps) {
   const navigate = useNavigate()
   const { conversationId } = useParams()
+  const [searchParams, setSearchParams] = useSearchParams()
   const pushNotification = useNotificationStore((state) => state.push)
   const {
     conversations,
@@ -35,6 +36,10 @@ export function ConversationList({ collapsed }: ConversationListProps) {
   const [renamingId, setRenamingId] = useState<string | null>(null)
   const [renameValue, setRenameValue] = useState('')
   const [memoryCountMap, setMemoryCountMap] = useState<Record<string, number>>({})
+  const lastAutoFocusKeyRef = useRef('')
+  const adjustedSearchForPersonaFilterRef = useRef('')
+  const personaFilterId = searchParams.get('personaId')?.trim() || ''
+  const personaFilterName = searchParams.get('personaName')?.trim() || ''
 
   useEffect(() => {
     void loadConversations()
@@ -71,16 +76,102 @@ export function ConversationList({ collapsed }: ConversationListProps) {
       pushNotification({
         type: 'error',
         title: '加载会话列表失败',
-        description: error instanceof Error ? error.message : '请稍后再试。',
+        description: error instanceof Error ? error.message : '请稍后重试。',
       })
     }
   }
 
-  const filtered = conversations.filter((conversation) =>
-    conversation.title.toLowerCase().includes(searchQuery.toLowerCase()),
-  )
+  const personaMatched = personaFilterId
+    ? conversations.filter(conversation => conversation.personaId === personaFilterId)
+    : conversations
+
+  const filtered = personaMatched.filter((conversation) => {
+    const matchesSearch = conversation.title.toLowerCase().includes(searchQuery.toLowerCase())
+    return matchesSearch
+  })
+
   const pinned = filtered.filter(conversation => conversation.pinned)
   const unpinned = filtered.filter(conversation => !conversation.pinned)
+
+  useEffect(() => {
+    if (!personaFilterId) {
+      adjustedSearchForPersonaFilterRef.current = ''
+      return
+    }
+
+    if (!searchQuery.trim()) {
+      return
+    }
+
+    if (filtered.length > 0 || personaMatched.length === 0) {
+      return
+    }
+
+    if (adjustedSearchForPersonaFilterRef.current === personaFilterId) {
+      return
+    }
+
+    adjustedSearchForPersonaFilterRef.current = personaFilterId
+    setSearchQuery('')
+    pushNotification({
+      type: 'info',
+      title: '已清空会话搜索',
+      description: '为展示当前 Persona 相关 Conversations，已临时清空搜索词。',
+    })
+  }, [
+    filtered.length,
+    personaFilterId,
+    personaMatched.length,
+    pushNotification,
+    searchQuery,
+    setSearchQuery,
+  ])
+
+  useEffect(() => {
+    if (!personaFilterId || filtered.length === 0) {
+      return
+    }
+
+    const currentMatched = Boolean(
+      conversationId && filtered.some(conversation => conversation.id === conversationId),
+    )
+    if (currentMatched) {
+      return
+    }
+
+    const firstConversation = filtered[0]
+    const autoFocusKey = `${personaFilterId}:${firstConversation.id}`
+    if (lastAutoFocusKeyRef.current === autoFocusKey) {
+      return
+    }
+    lastAutoFocusKeyRef.current = autoFocusKey
+
+    pushNotification({
+      type: 'info',
+      title: '已自动定位 Conversation',
+      description: `已为当前 Persona 过滤定位到「${firstConversation.title}」。`,
+    })
+
+    const query = searchParams.toString()
+    const target = query
+      ? `/chat/${firstConversation.id}?${query}`
+      : `/chat/${firstConversation.id}`
+    navigate(target, { replace: true })
+  }, [conversationId, filtered, navigate, personaFilterId, pushNotification, searchParams])
+
+  function clearPersonaFilter() {
+    lastAutoFocusKeyRef.current = ''
+    adjustedSearchForPersonaFilterRef.current = ''
+    const next = new URLSearchParams(searchParams)
+    next.delete('personaId')
+    next.delete('personaName')
+    setSearchParams(next)
+    pushNotification({
+      type: 'info',
+      title: '已清除 Persona 过滤',
+      description: '会话列表已恢复默认视图。',
+    })
+  }
 
   async function handleRename(id: string) {
     const nextTitle = renameValue.trim()
@@ -104,7 +195,7 @@ export function ConversationList({ collapsed }: ConversationListProps) {
       pushNotification({
         type: 'error',
         title: '重命名会话失败',
-        description: error instanceof Error ? error.message : '请稍后再试。',
+        description: error instanceof Error ? error.message : '请稍后重试。',
       })
     }
   }
@@ -122,7 +213,7 @@ export function ConversationList({ collapsed }: ConversationListProps) {
       pushNotification({
         type: 'error',
         title: '更新置顶状态失败',
-        description: error instanceof Error ? error.message : '请稍后再试。',
+        description: error instanceof Error ? error.message : '请稍后重试。',
       })
     }
   }
@@ -143,7 +234,7 @@ export function ConversationList({ collapsed }: ConversationListProps) {
       pushNotification({
         type: 'error',
         title: '删除会话失败',
-        description: error instanceof Error ? error.message : '请稍后再试。',
+        description: error instanceof Error ? error.message : '请稍后重试。',
       })
     }
   }
@@ -171,6 +262,25 @@ export function ConversationList({ collapsed }: ConversationListProps) {
           onChange={event => setSearchQuery(event.target.value)}
           className="h-8 text-xs"
         />
+        {personaFilterId && (
+          <div className="mt-2 flex items-center justify-between rounded-md border border-(--color-border) bg-(--color-card) px-2 py-1">
+            <div className="min-w-0 flex items-center gap-2">
+              <span className="truncate text-[11px] text-(--color-muted-foreground)">
+                Persona 过滤：{personaFilterName || personaFilterId}
+              </span>
+              <Badge variant="outline" className="h-5 px-1.5 text-[10px]">
+                {filtered.length}
+              </Badge>
+            </div>
+            <button
+              type="button"
+              className="ml-2 rounded px-1.5 py-0.5 text-[11px] text-(--color-primary) hover:bg-(--color-muted)"
+              onClick={clearPersonaFilter}
+            >
+              清除
+            </button>
+          </div>
+        )}
       </div>
 
       <ScrollArea className="flex-1">
@@ -239,7 +349,9 @@ export function ConversationList({ collapsed }: ConversationListProps) {
 
           {filtered.length === 0 && (
             <div className="px-3 py-6 text-center text-xs text-(--color-muted-foreground)">
-              {searchQuery ? '没有找到匹配的会话。' : '还没有会话，先创建一个吧。'}
+              {searchQuery
+                ? '没有找到匹配的会话。'
+                : (personaFilterId ? '当前 Persona 过滤下没有会话。' : '还没有会话，先创建一个吧。')}
             </div>
           )}
         </div>
