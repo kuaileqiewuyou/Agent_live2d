@@ -1,4 +1,4 @@
-from app.skills.base import SkillExecutor
+﻿from app.skills.base import SkillExecutor
 
 
 class SummarySkill(SkillExecutor):
@@ -21,4 +21,3 @@ class PersonaStyleSkill(SkillExecutor):
             "skill": self.name,
             "prompt_fragment": f"请保持 {persona_name} 的说话风格，并自然回应“{user_input[:80]}”。",
         }
-

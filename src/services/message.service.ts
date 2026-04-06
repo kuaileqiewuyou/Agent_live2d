@@ -24,6 +24,8 @@ interface StreamToolResult {
   title?: string
   summary?: string
   result: string
+  toolName?: string
+  executionMode?: string
   manual?: boolean
   inputText?: string
   inputParams?: ManualToolInputParams

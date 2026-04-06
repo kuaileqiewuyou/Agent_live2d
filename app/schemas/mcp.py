@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from pydantic import Field
+from pydantic import Field, computed_field
 
 from app.schemas.base import CamelModel
 from app.schemas.common import TimestampedSchema
@@ -15,7 +15,7 @@ class MCPServerBase(CamelModel):
 
 
 class MCPServerCreate(MCPServerBase):
-    pass
+    advanced_config: dict | None = None
 
 
 class MCPServerUpdate(CamelModel):
@@ -24,6 +24,7 @@ class MCPServerUpdate(CamelModel):
     transport_type: str | None = None
     endpoint_or_command: str | None = None
     enabled: bool | None = None
+    advanced_config: dict | None = None
 
 
 class MCPServerRead(MCPServerBase, TimestampedSchema):
@@ -34,6 +35,14 @@ class MCPServerRead(MCPServerBase, TimestampedSchema):
     prompt_count: int
     last_checked_at: datetime | None = None
     capabilities: dict = Field(default_factory=dict)
+
+    @computed_field(alias="advancedConfig")
+    @property
+    def advanced_config(self) -> dict | None:
+        if not isinstance(self.capabilities, dict):
+            return None
+        config = self.capabilities.get("config")
+        return config if isinstance(config, dict) and config else None
 
 
 class MCPServerCheckResult(CamelModel):

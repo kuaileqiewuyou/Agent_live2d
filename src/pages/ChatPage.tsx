@@ -28,6 +28,7 @@ import type {
   Live2DState,
   LongTermMemory,
   ManualToolFailureHint,
+  ManualToolExecutionState,
   ManualToolInputParams,
   ManualToolRequest,
   MCPServer,
@@ -109,6 +110,10 @@ interface AssistantManualToolRequestMeta {
   label?: string
   inputText?: string
   inputParams?: Record<string, unknown>
+}
+
+function getManualToolExecutionKey(type: 'skill' | 'mcp', targetId: string) {
+  return `${type}:${targetId}`
 }
 
 function normalizeInputParams(raw: unknown): ManualToolInputParams | undefined {
@@ -475,6 +480,7 @@ export function ChatPage() {
   const [memoryFeedback, setMemoryFeedback] = useState<MemoryActionFeedback | null>(null)
   const [backendToolValidationMessage, setBackendToolValidationMessage] = useState<string | null>(null)
   const [live2dState, setLive2dState] = useState<Live2DState>('idle')
+  const [toolExecutionStates, setToolExecutionStates] = useState<ManualToolExecutionState[]>([])
 
   const notifyConversationMetaUpdated = useCallback(() => {
     window.dispatchEvent(new CustomEvent(CONVERSATION_META_UPDATED_EVENT))
@@ -543,6 +549,7 @@ export function ChatPage() {
       setMemoryFeedback(null)
       setBackendToolValidationMessage(null)
       setLive2dState('idle')
+      setToolExecutionStates([])
       return
     }
 
@@ -578,7 +585,24 @@ export function ChatPage() {
     const thinkingId = `temp-thinking-${nonce}`
     const memoryId = `temp-memory-${nonce}`
     const streamToolResults: StreamToolResultMeta[] = []
+    const manualRequests = options?.manualToolRequests || []
     let streamAcceptedByServer = false
+
+    if (manualRequests.length > 0) {
+      setToolExecutionStates(
+        manualRequests.map(request => ({
+          type: request.type,
+          targetId: request.targetId,
+          label: request.label,
+          status: 'queued',
+          detail: '等待执行',
+          updatedAt: new Date().toISOString(),
+        })),
+      )
+    }
+    else {
+      setToolExecutionStates([])
+    }
 
     const tempUserMessage: Message = {
       id: userId,
@@ -638,6 +662,17 @@ export function ChatPage() {
             updateMessage(thinkingId, {
               content: payload.message || fallbackMessage,
             })
+            if (payload.manual) {
+              setToolExecutionStates(current => current.map((item) => {
+                if (item.status !== 'queued') return item
+                return {
+                  ...item,
+                  status: 'running',
+                  detail: '执行中',
+                  updatedAt: new Date().toISOString(),
+                }
+              }))
+            }
           },
           onToolResult: (payload) => {
             streamToolResults.push({
@@ -650,14 +685,43 @@ export function ChatPage() {
               manual: payload.manual,
               inputText: payload.inputText,
               inputParams: payload.inputParams,
+              error: payload.error,
+              toolName: payload.toolName,
+              executionMode: payload.executionMode,
             })
+            if (payload.manual) {
+              const payloadLabel = normalizeToolLabel(payload.label || payload.name || payload.title)
+              const payloadKey = getManualToolExecutionKey(payload.type, payload.name)
+              setToolExecutionStates(current => current.map((item) => {
+                const currentKey = getManualToolExecutionKey(item.type, item.targetId)
+                const sameTarget = currentKey === payloadKey
+                const sameLabel = normalizeToolLabel(item.label) === payloadLabel
+                if (!sameTarget && !sameLabel) return item
+
+                return {
+                  ...item,
+                  status: payload.error ? 'error' : 'success',
+                  detail: payload.error ? (payload.summary || payload.error || '执行失败') : (payload.summary || '执行完成'),
+                  updatedAt: new Date().toISOString(),
+                }
+              }))
+            }
             const toolMessageId = `temp-tool-${nonce}-${payload.type}-${payload.name}`
             const existing = useConversationStore.getState().messages.find(message => message.id === toolMessageId)
             if (existing) {
               updateMessage(toolMessageId, {
                 content: payload.result,
                 toolStatus: 'success',
-                metadata: { ...existing.metadata, title: payload.title, summary: payload.summary },
+                metadata: {
+                  ...existing.metadata,
+                  title: payload.title,
+                  summary: payload.summary,
+                  error: payload.error,
+                  toolName: payload.toolName,
+                  executionMode: payload.executionMode,
+                  inputText: payload.inputText,
+                  inputParams: payload.inputParams,
+                },
               })
               return
             }
@@ -681,6 +745,9 @@ export function ChatPage() {
                     invocationMode: payload.manual ? 'manual' : 'automatic',
                     title: payload.title,
                     summary: payload.summary,
+                    error: payload.error,
+                    toolName: payload.toolName,
+                    executionMode: payload.executionMode,
                     inputText: payload.inputText,
                     inputParams: payload.inputParams,
                   },
@@ -722,6 +789,17 @@ export function ChatPage() {
             const fallbackUsage = deriveToolUsage(streamToolResults)
             const toolUsage = payload.toolUsage || fallbackUsage
             const manualToolRequests = payload.manualToolRequests || options?.manualToolRequests || []
+            if (manualToolRequests.length > 0) {
+              setToolExecutionStates(current => current.map((item) => {
+                if (item.status !== 'queued' && item.status !== 'running') return item
+                return {
+                  ...item,
+                  status: 'success',
+                  detail: '执行完成',
+                  updatedAt: new Date().toISOString(),
+                }
+              }))
+            }
             updateMessage(assistantId, {
               id: payload.messageId,
               content: payload.content,
@@ -748,6 +826,15 @@ export function ChatPage() {
             }
           },
           onStopped: () => {
+            setToolExecutionStates(current => current.map((item) => {
+              if (item.status !== 'queued' && item.status !== 'running') return item
+              return {
+                ...item,
+                status: 'error',
+                detail: '已停止',
+                updatedAt: new Date().toISOString(),
+              }
+            }))
             const currentMessages = useConversationStore.getState().messages
             const persistedMessages = dropTransientMessages(currentMessages)
             setMessages([
@@ -764,6 +851,15 @@ export function ChatPage() {
     }
     catch (streamError) {
       setLive2dState('error')
+      setToolExecutionStates(current => current.map((item) => {
+        if (item.status !== 'queued' && item.status !== 'running') return item
+        return {
+          ...item,
+          status: 'error',
+          detail: '执行失败',
+          updatedAt: new Date().toISOString(),
+        }
+      }))
       const failureOutcome = await handleStreamFailure({
         streamError,
         streamAcceptedByServer,
@@ -1170,6 +1266,7 @@ export function ChatPage() {
                 mcpCount={conversation?.enabledMcpServerIds.length}
                 enabledSkills={skills}
                 enabledMcpServers={mcpServers}
+                toolExecutionStates={toolExecutionStates}
                 recentToolFailures={recentToolFailures}
                 backendValidationMessage={backendToolValidationMessage}
                 onOpenConversationSettings={handleOpenToolRepairConversationSettings}
@@ -1206,3 +1303,6 @@ export function ChatPage() {
     </>
   )
 }
+
+
+

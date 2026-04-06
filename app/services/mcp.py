@@ -16,6 +16,9 @@ class MCPServerService:
         return await self.repo.list()
 
     async def create_server(self, payload: dict):
+        config_patch = self._consume_server_config_patch(payload)
+        if config_patch is not None:
+            payload["capabilities"] = self._with_server_config(payload.get("capabilities"), config_patch)
         server = await self.repo.create(payload)
         await self.session.commit()
         return server
@@ -25,6 +28,9 @@ class MCPServerService:
 
     async def update_server(self, server_id: str, payload: dict):
         server = await self.get_server(server_id)
+        config_patch = self._consume_server_config_patch(payload, existing_capabilities=server.capabilities)
+        if config_patch is not None:
+            payload["capabilities"] = self._with_server_config(server.capabilities, config_patch)
         server = await self.repo.update(server, payload)
         await self.session.commit()
         return server
@@ -61,6 +67,7 @@ class MCPServerService:
             "tools": self._as_list(payload.get("tools")),
             "resources": self._as_list(payload.get("resources")),
             "prompts": self._as_list(payload.get("prompts")),
+            "config": self._normalize_server_config(payload.get("config")),
             "detail": payload.get("detail") if isinstance(payload.get("detail"), str) else "",
             "source": payload.get("source") if isinstance(payload.get("source"), str) else "probe",
             "checkedAt": payload.get("checkedAt") if isinstance(payload.get("checkedAt"), str) else None,
@@ -72,12 +79,93 @@ class MCPServerService:
             "lastError": payload.get("lastError") if isinstance(payload.get("lastError"), str) else None,
         }
 
+    @staticmethod
+    def _normalize_kv_map(value: object) -> dict[str, str]:
+        if not isinstance(value, dict):
+            return {}
+        normalized: dict[str, str] = {}
+        for key, raw in value.items():
+            if not isinstance(key, str) or not key.strip():
+                continue
+            if isinstance(raw, str) and raw.strip():
+                normalized[key.strip()] = raw.strip()
+        return normalized
+
+    @classmethod
+    def _normalize_server_config(cls, config: object) -> dict:
+        if not isinstance(config, dict):
+            return {}
+        timeout_ms = config.get("timeoutMs")
+        normalized: dict[str, object] = {}
+
+        if isinstance(timeout_ms, (int, float)) and timeout_ms > 0:
+            normalized["timeoutMs"] = int(timeout_ms)
+
+        headers = cls._normalize_kv_map(config.get("headers"))
+        if headers:
+            normalized["headers"] = headers
+
+        env = cls._normalize_kv_map(config.get("env"))
+        if env:
+            normalized["env"] = env
+
+        raw_args = config.get("args")
+        if isinstance(raw_args, list):
+            args = [str(item).strip() for item in raw_args if isinstance(item, str) and str(item).strip()]
+            if args:
+                normalized["args"] = args
+
+        raw_auth = config.get("auth")
+        if isinstance(raw_auth, dict):
+            auth_type = str(raw_auth.get("type") or "").strip()
+            if auth_type == "bearer":
+                token = str(raw_auth.get("token") or "").strip()
+                if token:
+                    normalized["auth"] = {"type": "bearer", "token": token}
+            elif auth_type == "basic":
+                username = str(raw_auth.get("username") or "").strip()
+                password = str(raw_auth.get("password") or "")
+                if username or password:
+                    normalized["auth"] = {
+                        "type": "basic",
+                        "username": username,
+                        "password": password,
+                    }
+            elif auth_type == "apiKey":
+                header_name = str(raw_auth.get("headerName") or "").strip()
+                value = str(raw_auth.get("value") or "").strip()
+                if header_name and value:
+                    normalized["auth"] = {
+                        "type": "apiKey",
+                        "headerName": header_name,
+                        "value": value,
+                    }
+
+        return normalized
+
+    def _consume_server_config_patch(self, payload: dict, *, existing_capabilities: dict | None = None) -> dict | None:
+        if "advanced_config" not in payload:
+            return None
+        raw = payload.pop("advanced_config")
+        if raw is None:
+            if isinstance(existing_capabilities, dict):
+                return self._normalize_capabilities(existing_capabilities).get("config", {})
+            return {}
+        return self._normalize_server_config(raw)
+
+    def _with_server_config(self, capabilities: dict | None, config: dict | None) -> dict:
+        normalized_caps = self._normalize_capabilities(capabilities)
+        if isinstance(config, dict):
+            normalized_caps["config"] = config
+        return normalized_caps
+
     async def check_server(self, server_id: str):
         server = await self.get_server(server_id)
         cached = self._normalize_capabilities(server.capabilities)
         inspection = await self.client_manager.inspect_server(
             transport_type=server.transport_type,
             endpoint_or_command=server.endpoint_or_command,
+            config=cached.get("config"),
         )
         checked_at = self._as_datetime(inspection.get("checked_at")) or datetime.now(timezone.utc)
         probe_tools = self._as_list(inspection.get("tools"))
@@ -125,6 +213,7 @@ class MCPServerService:
                     "tools": final_tools,
                     "resources": final_resources,
                     "prompts": final_prompts,
+                    "config": cached.get("config", {}),
                     "detail": capability_detail,
                     "source": capability_source,
                     "checkedAt": self._to_iso(checked_at),

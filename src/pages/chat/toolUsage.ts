@@ -15,6 +15,9 @@ export interface StreamToolResultMeta {
   title?: string
   summary?: string
   result?: string
+  toolName?: string
+  executionMode?: string
+  error?: string | boolean
   manual?: boolean
   inputText?: string
   inputParams?: ManualToolInputParams
