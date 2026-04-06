@@ -286,6 +286,7 @@ M1 稳定性收口
 - [x] N11：完成统一 SkillRuntimeEngine（registry + workflow runtime）接入 ToolAgent，移除 generic fallback 语义
 - [x] N12：补齐失败重试与降级集成回归（MCP check 重试恢复 + stream 中 MCP not-ready 占位降级不阻塞 final_answer）
 - [x] N13：修复 ChatInput/ChatPage 中文乱码与字符串闭合问题，恢复聊天页构建与测试通过
+- [x] N14：完成发布包收口（版本号统一到 0.1.1 + CHANGELOG + release notes 模板）
 
 ## 8. 历史已完成执行项（归档）
 
