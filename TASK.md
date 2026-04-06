@@ -36,6 +36,8 @@ M1 稳定性收口
       M6 v0.1.0-rc2 发布收口（依赖 M2~M5 全部完成）
            ↓
       M7 v0.1.0 正式版收口
+           ↓
+      M8 真实可调用能力收口（全域）
 ```
 
 进度标记：`[ ]` 未开始　`[~]` 进行中　`[x]` 已完成
@@ -49,6 +51,7 @@ M1 稳定性收口
 | M5 Live2D 与桌面体验 | `[x]` 已完成 | 80% |
 | M6 rc2 发布收口 | `[x]` 已完成 | 50% |
 | M7 正式版收口 | `[x]` 已完成 | 50% |
+| M8 真实可调用能力收口（全域） | `[x]` 已完成 | 100% |
 
 ## 4. 分阶段执行内容
 
@@ -192,6 +195,61 @@ M1 稳定性收口
 - v0.1.0 版本可稳定演示与本地部署
 - 主链路无明显体验阻断问题
 
+---
+
+### M8 真实可调用能力收口（全域）
+
+**目标说明：**
+- 将当前”可管理/可展示但非真实执行”的能力，统一升级为”真实可调用、可观测、可回归”。
+- 本里程碑不仅包含 MCP，也包含 Skill 执行、Provider 工具调用链路、流式能力与配置层可用性。
+
+**当前能力状态盘点：**
+
+| 能力 | 当前状态 | 目标状态 |
+|------|---------|---------|
+| MCP initialize → tools/list → tools/call | 占位回填，未走真实协议 | http + stdio 真实调用闭环 |
+| MCP 配置（auth/headers/timeout） | 仅 name/endpoint/enabled | 补齐真实接入所需全部字段 |
+| Skill 执行 | SkillRegistry 返回固定文案 | 真实执行 + 结果参与回复 |
+| Provider tool_call | toolCallSupported 字段存在但未打通 | 模型工具调用真实触发并回填 |
+| Provider stream | 伪分片为主路径 | 真实上游 stream 优先，伪分片降级 |
+| Anthropic/Gemini Provider | 占位适配器 | 最小可用接入 |
+
+**N1 核对结果（CONTRACT 对齐检查，2026-04-06）：**
+
+| 检查项 | CONTRACT 现状 | 实现现状 | 结论 |
+|------|---------------|---------|------|
+| MCP Server 管理接口 | 已定义 CRUD + `check` + `capabilities` | 已实现并可用 | 对齐 |
+| MCP 协议级调用（initialize/tools/list/tools/call） | 未定义协议级保证 | 当前为探活/占位回填，未形成真实协议闭环 | 缺口（纳入 N2） |
+| Model Config `toolCallSupported` | 已定义字段 | 字段已落库，但主链路未形成真实 tool_call 执行 | 缺口（纳入 N4） |
+| SSE 主链路事件 + `live2dState` | 已定义 `tool_calling/tool_result/token/final_answer` 与 `live2dState` 约定 | 已实现并在 stream 中附带状态 | 对齐 |
+| `manualToolRequests` 契约 | 未在 CONTRACT 明确请求体结构 | 前后端已实现并使用 | 缺口（需补 CONTRACT） |
+| MCP 配置字段（auth/headers/timeout/args/env） | 仅定义 `transportType` + `endpointOrCommand` + `enabled` | 当前配置不足以覆盖真实生产接入 | 缺口（纳入 N2/N5） |
+
+**后端：**
+- [x] MCP 真实协议闭环：实现 `initialize -> tools/list -> tools/call`（覆盖 http + stdio）
+- [x] MCP 调用执行器：ToolAgent 从”状态占位回填”升级为”真实调用 + 结果回填”
+- [x] MCP 配置扩展：补齐 `command/args/env/headers/auth/timeout` 等真实接入所需字段
+- [x] Skill 真实执行闭环：将 SkillRegistry 与消息主链路打通，返回真实执行结果而非占位文案
+- [x] Provider 工具调用闭环：统一 `toolCallSupported` 行为，打通模型工具调用入口
+- [x] Provider 流式闭环：优先走真实上游 stream，保留降级但不再以伪分片为主路径
+- [x] 补齐可运行适配：将当前占位 Provider（Anthropic/Gemini）升级为最小可用接入
+- [x] 集成测试补齐：新增 fake MCP server + Skill runner 的端到端测试（含失败重试与降级）
+
+**前端：**
+- [x] MCP 管理页支持真实配置项：高级参数、认证信息、连接测试详情（依赖后端 MCP 配置扩展完成）
+- [x] ChatToolPanel 展示真实调用阶段（queued/running/success/error）与可读错误原因（依赖后端 MCP 执行器 + Skill 执行闭环）
+- [x] 手动工具面板支持简单文本参数输入并与后端校验一致（已有基础，先收口）
+- [x] 手动工具面板支持 schema 驱动类型化参数输入（JSON Schema → 动态表单，后续迭代）
+- [x] 聊天区工具结果展示升级为”真实返回结构 + 关键字段摘要”（依赖后端真实调用链路）
+- [x] 会话级工具选择与真实执行状态联动：切换会话后可恢复上下文
+
+**验收标准：**
+- 至少 1 个真实 MCP Server 可在聊天链路中被调用并返回结构化结果
+- 至少 1 个 Skill 在主链路中真实执行并参与最终回复
+- OpenAI-compatible / Ollama 在主链路可稳定真实 stream
+- Provider 工具调用与手动工具调用均可回归，不出现主链路阻断
+- 新增集成测试可稳定通过，且 `smoke:release` 保持全绿
+
 ## 5. 已知风险与缓解策略
 
 | 风险项 | 影响 | 缓解策略 |
@@ -201,6 +259,9 @@ M1 稳定性收口
 | Tauri 2 跨平台兼容性 | Desktop 构建/启动问题 | 优先保证 Windows，macOS/Linux 作为 rc2 后再验证 |
 | Provider 厂商 API 差异 | stream/tool_call 行为不一致 | 统一抽象层兜底，前端只依赖 CONTRACT 约定的事件格式 |
 | 前后端联调节奏不同步 | 前端等待后端接口 | 前端保持 mock 可用，CONTRACT 变更时两端同步更新 |
+| MCP stdio 进程管理受 Tauri sandbox 限制 | stdio 模式在 Desktop 中可能无法启动子进程 | 优先保证 http 模式可用，stdio 作为 web-only 路径或需 sidecar 方案 |
+| 真实 Provider tool_call 格式各厂商不一致 | Anthropic/Gemini 工具调用与 OpenAI 格式差异大 | 抽象层统一转换，前端只消费 CONTRACT 标准化事件 |
+| fake MCP server 测试环境搭建复杂度 | 集成测试可能不稳定 | 使用内存 HTTP server，不依赖外部进程，测试可独立运行 |
 
 ## 6. 版本边界（本阶段不做）
 
@@ -210,7 +271,23 @@ M1 稳定性收口
 - 不做复杂权限系统与企业级审计平台
 - 不做过早微服务拆分
 
-## 7. 当前立刻执行项（Next → 属于 M1）
+## 7. 当前立刻执行项（Next → 属于 M8）
+
+- [x] N1：核对 M8 能力盘点表与 CONTRACT 一致性，确认每项”当前状态”无遗漏
+- [x] N2：先打通 MCP 真实调用最小闭环（http，单工具，主链路可回填）
+- [x] N3：打通 Skill 真实执行最小闭环（manualToolRequests + ToolAgent 真执行）
+- [x] N4：完成 Provider 工具调用抽象层改造（不在业务层散落分支）
+- [x] N5：补齐前端 MCP 高级配置与调用状态可视化
+- [x] N6：补齐集成回归（fake MCP + fake Skill + stream 主链路），并更新发布文档
+- [x] N7：修复 CONTRACT.md 编码乱码，并补齐 `manualToolRequests` 与 MCP `advancedConfig` 契约字段
+- [x] N8：完成 MCP `stdio` 下 `initialize/tools/list/tools/call` 最小真实闭环，并补充回归测试
+- [x] N9：完成 Anthropic/Gemini Provider 最小可用接入（chat/chat_with_tools/test_connection）并补工具调用抽象回归
+- [x] N10：完成 OpenAI-compatible / Ollama 真实上游 stream 优先路径（含 tool_calls 流式回填）并补回归测试
+- [x] N11：完成统一 SkillRuntimeEngine（registry + workflow runtime）接入 ToolAgent，移除 generic fallback 语义
+- [x] N12：补齐失败重试与降级集成回归（MCP check 重试恢复 + stream 中 MCP not-ready 占位降级不阻塞 final_answer）
+- [x] N13：修复 ChatInput/ChatPage 中文乱码与字符串闭合问题，恢复聊天页构建与测试通过
+
+## 8. 历史已完成执行项（归档）
 
 - [x] N1：完成 requestId 幂等主链路最终闭环（服务端 + 前端 + 回归测试）
 - [x] N2：完善 dedupe 接口前端入口与回归验证
@@ -218,7 +295,3 @@ M1 稳定性收口
 - [x] N4：推进 M2 错误语义统一与异常恢复体验
 - [x] N5：完成 Qdrant warning 降噪闭环（冷却窗口 + 空异常文案兜底 + 回归验证）
 - [x] N6：完成 v0.1.0 发版前最终全量 smoke 回归（含 E2E + Desktop preflight + Docker health）
-
-
-
-

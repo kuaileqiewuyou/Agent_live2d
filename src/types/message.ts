@@ -4,6 +4,7 @@ export type ToolStatus = 'calling' | 'success' | 'error'
 export type ManualToolType = 'skill' | 'mcp'
 export type ManualToolParamType = 'string' | 'number' | 'boolean' | 'enum'
 export type ManualToolFailureReason = 'not_enabled' | 'invalid_params' | 'execution_error' | 'unknown'
+export type ManualToolExecutionStatus = 'queued' | 'running' | 'success' | 'error'
 
 export interface MessageAttachment {
   id: string
@@ -42,6 +43,15 @@ export interface ManualToolFailureHint {
   reason?: ManualToolFailureReason
   inputText?: string
   inputParams?: ManualToolInputParams
+}
+
+export interface ManualToolExecutionState {
+  type: ManualToolType
+  targetId: string
+  label: string
+  status: ManualToolExecutionStatus
+  detail?: string
+  updatedAt: string
 }
 
 export interface Message {

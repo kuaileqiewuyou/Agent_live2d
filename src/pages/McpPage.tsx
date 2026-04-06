@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+﻿import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Plus, Server } from 'lucide-react'
 import type { MCPServer } from '@/types'
 import { mcpService } from '@/services'
@@ -16,6 +16,7 @@ export function McpPage() {
   const [dialogOpen, setDialogOpen] = useState(false)
   const [checkingIds, setCheckingIds] = useState<Set<string>>(new Set())
   const [loading, setLoading] = useState(true)
+
   const pushNotification = useNotificationStore((state) => state.push)
   const serversRef = useRef<MCPServer[]>([])
   const autoCheckInFlightRef = useRef(false)
@@ -27,12 +28,8 @@ export function McpPage() {
   const setCheckingState = useCallback((id: string, checking: boolean) => {
     setCheckingIds((prev) => {
       const next = new Set(prev)
-      if (checking) {
-        next.add(id)
-      }
-      else {
-        next.delete(id)
-      }
+      if (checking) next.add(id)
+      else next.delete(id)
       return next
     })
   }, [])
@@ -64,12 +61,13 @@ export function McpPage() {
     } = {},
   ) => {
     setCheckingState(id, true)
+
     try {
       const result = await mcpService.checkConnection(id)
       if (options.notifyResult !== false) {
         pushNotification({
           type: result.success ? 'success' : 'error',
-          title: result.success ? '连接检查完成' : '连接检查失败',
+          title: result.success ? '连接测试成功' : '连接测试失败',
           description: result.message,
         })
       }
@@ -79,7 +77,7 @@ export function McpPage() {
       if (options.notifyError !== false) {
         pushNotification({
           type: 'error',
-          title: '连接检查失败',
+          title: '连接测试失败',
           description: error instanceof Error ? error.message : '请稍后再试。',
         })
       }
@@ -105,6 +103,7 @@ export function McpPage() {
     const targets = baseServers
       .filter(server => server.enabled)
       .map(server => server.id)
+
     if (targets.length === 0) {
       return
     }
@@ -131,6 +130,7 @@ export function McpPage() {
     ;(async () => {
       const allServers = await loadServers()
       if (cancelled) return
+
       setLoading(false)
       if (allServers?.some(server => server.enabled)) {
         await runAutoCheckSweep(allServers)
@@ -170,14 +170,13 @@ export function McpPage() {
   async function handleToggle(id: string, enabled: boolean) {
     try {
       const updated = await mcpService.toggleMcpServer(id, enabled)
-      setServers(prev =>
-        prev.map(server => (server.id === updated.id ? updated : server)),
-      )
+      setServers(prev => prev.map(server => (server.id === updated.id ? updated : server)))
       pushNotification({
         type: 'success',
         title: enabled ? 'MCP 服务已启用' : 'MCP 服务已停用',
         description: updated.name,
       })
+
       if (enabled) {
         await checkConnection(id, {
           notifyResult: false,
@@ -224,6 +223,7 @@ export function McpPage() {
     transportType: 'stdio' | 'http'
     address: string
     enabled: boolean
+    advancedConfig?: MCPServer['advancedConfig']
   }) {
     try {
       const server = await mcpService.createMcpServer({
@@ -232,7 +232,9 @@ export function McpPage() {
         transportType: data.transportType,
         address: data.address,
         enabled: data.enabled,
+        advancedConfig: data.advancedConfig,
       })
+
       setServers(prev => [...prev, server])
       setDialogOpen(false)
       pushNotification({
@@ -240,6 +242,7 @@ export function McpPage() {
         title: 'MCP 服务已创建',
         description: server.name,
       })
+
       if (server.enabled) {
         await checkConnection(server.id, {
           notifyResult: false,
@@ -258,9 +261,7 @@ export function McpPage() {
   }
 
   const enabledCount = servers.filter(server => server.enabled).length
-  const connectedCount = servers.filter(
-    server => server.connectionStatus === 'connected',
-  ).length
+  const connectedCount = servers.filter(server => server.connectionStatus === 'connected').length
   const checkingCount = checkingIds.size
 
   const statusSummary = useMemo(() => {
@@ -284,6 +285,7 @@ export function McpPage() {
               </p>
             </div>
           </div>
+
           <div className="flex items-center gap-3">
             <div className="flex items-center gap-2">
               <Badge variant="secondary" className="px-2.5 py-1 text-xs">
@@ -293,6 +295,7 @@ export function McpPage() {
                 {statusSummary}
               </Badge>
             </div>
+
             <Button
               size="sm"
               className="gap-1.5"
@@ -344,3 +347,4 @@ export function McpPage() {
     </div>
   )
 }
+

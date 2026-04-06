@@ -14,7 +14,7 @@ import {
   Wrench,
   Zap,
 } from 'lucide-react'
-import type { MCPServer, ManualToolFailureHint, ManualToolRequest, Skill } from '@/types'
+import type { MCPServer, ManualToolExecutionState, ManualToolFailureHint, ManualToolRequest, Skill } from '@/types'
 import { cn } from '@/utils'
 import { Button } from '@/components/ui/button'
 import { ChatToolPanel } from '@/components/chat/ChatToolPanel'
@@ -59,6 +59,7 @@ interface ChatInputProps {
   mcpCount?: number
   enabledSkills?: Skill[]
   enabledMcpServers?: MCPServer[]
+  toolExecutionStates?: ManualToolExecutionState[]
   recentToolFailures?: ManualToolFailureHint[]
   backendValidationMessage?: string | null
   onOpenConversationSettings?: () => void
@@ -81,6 +82,7 @@ export function ChatInput({
   mcpCount,
   enabledSkills = [],
   enabledMcpServers = [],
+  toolExecutionStates = [],
   recentToolFailures = [],
   backendValidationMessage = null,
   onOpenConversationSettings,
@@ -375,6 +377,7 @@ export function ChatInput({
           <ChatToolPanel
             skills={enabledSkills}
             mcpServers={enabledMcpServers}
+            toolExecutionStates={toolExecutionStates}
             selectedRequests={selectedRequests}
             recentToolFailures={recentToolFailures}
             backendValidationIssues={backendValidationIssues}
@@ -579,7 +582,7 @@ export function ChatInput({
                     variant="ghost"
                     size="icon"
                     className="h-8 w-8 text-(--color-muted-foreground)"
-                    aria-label="重新生成上一条回复"
+                    aria-label="重新生成上一条回答"
                     onClick={onRegenerate}
                     disabled={showBackendOffline}
                   >
@@ -587,7 +590,7 @@ export function ChatInput({
                   </Button>
                 </TooltipTrigger>
                 <TooltipContent>
-                  <p>重新生成上一条回复</p>
+                  <p>重新生成上一条回答</p>
                 </TooltipContent>
               </Tooltip>
             </TooltipProvider>
@@ -649,3 +652,4 @@ export function ChatInput({
     </div>
   )
 }
+

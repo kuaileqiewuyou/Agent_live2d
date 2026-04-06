@@ -177,7 +177,7 @@ def test_mcp_check_falls_back_to_cached_capabilities_when_probe_fails(client, mo
         },
     ]
 
-    async def fake_inspect_server(self, *, transport_type: str, endpoint_or_command: str):
+    async def fake_inspect_server(self, *, transport_type: str, endpoint_or_command: str, config=None):
         assert transport_type == "http"
         assert endpoint_or_command == "http://127.0.0.1:9999"
         return responses.pop(0)
@@ -216,6 +216,104 @@ def test_mcp_check_falls_back_to_cached_capabilities_when_probe_fails(client, mo
     assert len(cap_data["tools"]) == 1
     assert len(cap_data["resources"]) == 1
     assert len(cap_data["prompts"]) == 1
+
+
+def test_mcp_advanced_config_roundtrip_and_check_uses_config(client, monkeypatch):
+    create = client.post(
+        "/api/mcp/servers",
+        json={
+            "name": "mcp-advanced-config",
+            "description": "MCP with advanced config",
+            "transportType": "http",
+            "endpointOrCommand": "http://127.0.0.1:9901/mcp",
+            "enabled": True,
+            "advancedConfig": {
+                "timeoutMs": 1800,
+                "headers": {"X-Trace-Id": "trace-xyz"},
+                "auth": {"type": "bearer", "token": "token-123"},
+            },
+        },
+    )
+    assert create.status_code == 201
+    server_data = create.json()["data"]
+    server_id = server_data["id"]
+    assert server_data["advancedConfig"]["timeoutMs"] == 1800
+    assert server_data["advancedConfig"]["headers"]["X-Trace-Id"] == "trace-xyz"
+
+    async def fake_inspect_server(self, *, transport_type: str, endpoint_or_command: str, config=None):
+        assert transport_type == "http"
+        assert endpoint_or_command == "http://127.0.0.1:9901/mcp"
+        assert isinstance(config, dict)
+        assert config.get("timeoutMs") == 1800
+        assert config.get("headers", {}).get("X-Trace-Id") == "trace-xyz"
+        assert config.get("auth", {}).get("type") == "bearer"
+        return {
+            "ok": True,
+            "status": "connected",
+            "detail": "probe ok",
+            "tools": [{"name": "echo", "description": "echo"}],
+            "resources": [],
+            "prompts": [],
+            "checked_at": datetime.now(timezone.utc),
+        }
+
+    monkeypatch.setattr(
+        "app.services.mcp.MCPClientManager.inspect_server",
+        fake_inspect_server,
+    )
+
+    check = client.post(f"/api/mcp/servers/{server_id}/check")
+    assert check.status_code == 200
+    assert check.json()["data"]["ok"] is True
+
+    get_one = client.get(f"/api/mcp/servers/{server_id}")
+    assert get_one.status_code == 200
+    advanced = get_one.json()["data"]["advancedConfig"]
+    assert advanced["timeoutMs"] == 1800
+    assert advanced["headers"]["X-Trace-Id"] == "trace-xyz"
+
+
+def test_mcp_check_retries_transient_probe_failure_then_recovers(client, monkeypatch):
+    create = client.post(
+        "/api/mcp/servers",
+        json={
+            "name": "mcp-retry-integration",
+            "description": "MCP retry probe",
+            "transportType": "http",
+            "endpointOrCommand": "http://127.0.0.1:9911/mcp",
+            "enabled": True,
+        },
+    )
+    assert create.status_code == 201
+    server_id = create.json()["data"]["id"]
+
+    attempts = {"count": 0}
+
+    async def fake_inspect_http_once(self, endpoint: str, *, config=None):
+        attempts["count"] += 1
+        if attempts["count"] < 2:
+            return self._build_result(ok=False, detail="transient timeout")
+        return self._build_result(
+            ok=True,
+            status="connected",
+            detail="probe recovered",
+            tools=[{"name": "echo", "description": "echo"}],
+            resources=[],
+            prompts=[],
+        )
+
+    monkeypatch.setattr(
+        "app.mcp.client.MCPClientManager._inspect_http_once",
+        fake_inspect_http_once,
+    )
+
+    check = client.post(f"/api/mcp/servers/{server_id}/check")
+    assert check.status_code == 200
+    payload = check.json()["data"]
+    assert payload["ok"] is True
+    assert payload["status"] == "connected"
+    assert payload["toolCount"] == 1
+    assert attempts["count"] == 2
 
 
 def test_meta_catalog_endpoints(client):

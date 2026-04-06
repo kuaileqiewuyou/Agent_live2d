@@ -1,4 +1,4 @@
-import type { ManualToolRequest } from '@/types'
+﻿import type { ManualToolRequest } from '@/types'
 
 export const TOOL_DRAFT_STORAGE_KEY = 'agent-live2d-tool-drafts'
 export const COMPOSER_DRAFT_STORAGE_KEY = 'agent-live2d-composer-drafts'
@@ -8,7 +8,6 @@ type StorageWriter = Pick<Storage, 'setItem'>
 type StorageLike = StorageReader & StorageWriter
 type ToolDraftMap = Record<string, ManualToolRequest[]>
 type ComposerDraftMap = Record<string, string>
-
 type ParsedParams = Record<string, string>
 
 export type ManualToolValidationIssueCode = 'required' | 'number' | 'boolean' | 'enum' | 'unknown'
@@ -46,7 +45,7 @@ function parseTextParams(inputText?: string): ParsedParams {
     .filter(Boolean)
 
   for (const line of lines) {
-    const match = line.match(/^([^:：]+)\s*[:：]\s*(.+)$/)
+    const match = line.match(/^([^:=：]+)\s*[:=：]\s*(.+)$/)
     if (!match) continue
     const [, rawKey, rawValue] = match
     const key = normalizeLegacyKey(rawKey)
@@ -129,8 +128,8 @@ export function buildManualToolValidationErrorMessage(
   requestIndex = 0,
 ): string | null {
   const issues: string[] = []
-  const missingFields = getMissingRequiredParams(request)
-  for (const field of missingFields) {
+
+  for (const field of getMissingRequiredParams(request)) {
     issues.push(`${field} is required`)
   }
 
@@ -148,16 +147,12 @@ export function buildManualToolValidationErrorMessage(
 
       if (rawType === 'number') {
         const numeric = Number(value)
-        if (!Number.isFinite(numeric)) {
-          issues.push(`${key} should be a number`)
-        }
+        if (!Number.isFinite(numeric)) issues.push(`${key} should be a number`)
         continue
       }
 
       if (rawType === 'boolean') {
-        if (parseBoolean(value) === null) {
-          issues.push(`${key} should be true/false`)
-        }
+        if (parseBoolean(value) === null) issues.push(`${key} should be true/false`)
         continue
       }
 
@@ -179,29 +174,19 @@ function toIssueCode(rawIssue: string): { field: string, code: ManualToolValidat
   if (!issue) return null
 
   let match = issue.match(/^(.+?)\s+is required$/i)
-  if (match) {
-    return { field: match[1].trim(), code: 'required' }
-  }
+  if (match) return { field: match[1].trim(), code: 'required' }
 
   match = issue.match(/^(.+?)\s+should be a number$/i)
-  if (match) {
-    return { field: match[1].trim(), code: 'number' }
-  }
+  if (match) return { field: match[1].trim(), code: 'number' }
 
   match = issue.match(/^(.+?)\s+should be true\/false$/i)
-  if (match) {
-    return { field: match[1].trim(), code: 'boolean' }
-  }
+  if (match) return { field: match[1].trim(), code: 'boolean' }
 
   match = issue.match(/^(.+?)\s+should be one of\s+(.+)$/i)
-  if (match) {
-    return { field: match[1].trim(), code: 'enum', detail: match[2].trim() }
-  }
+  if (match) return { field: match[1].trim(), code: 'enum', detail: match[2].trim() }
 
   const unknownMatch = issue.match(/^([A-Za-z0-9_.-]+)\b/)
-  if (unknownMatch) {
-    return { field: unknownMatch[1].trim(), code: 'unknown' }
-  }
+  if (unknownMatch) return { field: unknownMatch[1].trim(), code: 'unknown' }
 
   return null
 }
@@ -219,13 +204,8 @@ export function parseManualToolBackendValidationIssues(message: string): ManualT
   const issuePart = prefixMatch[2].trim()
   if (!issuePart) return []
 
-  const issues = issuePart
-    .split(';')
-    .map(item => item.trim())
-    .filter(Boolean)
-
   const parsedIssues: ManualToolBackendValidationIssue[] = []
-  for (const issue of issues) {
+  for (const issue of issuePart.split(';').map(item => item.trim()).filter(Boolean)) {
     const parsed = toIssueCode(issue)
     if (!parsed) continue
     parsedIssues.push({
@@ -236,22 +216,15 @@ export function parseManualToolBackendValidationIssues(message: string): ManualT
       raw: issue,
     })
   }
+
   return parsedIssues
 }
 
 export function formatManualToolBackendValidationIssue(issue: ManualToolBackendValidationIssue): string {
-  if (issue.code === 'required') {
-    return `${issue.field} 为必填项`
-  }
-  if (issue.code === 'number') {
-    return `${issue.field} 需要 number 类型`
-  }
-  if (issue.code === 'boolean') {
-    return `${issue.field} 需要 true/false`
-  }
-  if (issue.code === 'enum') {
-    return `${issue.field} 需为以下值之一：${issue.detail || ''}`.trim()
-  }
+  if (issue.code === 'required') return `${issue.field} 为必填项`
+  if (issue.code === 'number') return `${issue.field} 需要 number 类型`
+  if (issue.code === 'boolean') return `${issue.field} 需要 true/false`
+  if (issue.code === 'enum') return `${issue.field} 需为以下值之一：${issue.detail || ''}`.trim()
   return `${issue.field} 参数不合法`
 }
 
@@ -271,7 +244,7 @@ export function buildToolFallbackContent(
   if (requests.length === 0) return ''
   const labels = requests.map(request => `「${request.label}」`).join('、')
   const context = conversationTitle ? `会话「${conversationTitle}」` : '当前会话'
-  return `请优先调用 ${labels}，结合 ${context} 的上下文帮我处理这次任务。`
+  return `请优先调用 ${labels}，结合 ${context} 的上下文处理这次任务。`
 }
 
 export function readToolDraftMap(storage?: StorageLike | null): ToolDraftMap {
@@ -303,12 +276,8 @@ export function persistToolDraftForConversation(
   storage?: StorageLike | null,
 ) {
   const nextMap = readToolDraftMap(storage)
-  if (requests.length === 0) {
-    delete nextMap[conversationId]
-  }
-  else {
-    nextMap[conversationId] = requests
-  }
+  if (requests.length === 0) delete nextMap[conversationId]
+  else nextMap[conversationId] = requests
   writeToolDraftMap(nextMap, storage)
 }
 
@@ -341,11 +310,9 @@ export function persistComposerDraftForConversation(
   storage?: StorageLike | null,
 ) {
   const nextMap = readComposerDraftMap(storage)
-  if (!content.trim()) {
-    delete nextMap[conversationId]
-  }
-  else {
-    nextMap[conversationId] = content
-  }
+  if (!content.trim()) delete nextMap[conversationId]
+  else nextMap[conversationId] = content
   writeComposerDraftMap(nextMap, storage)
 }
+
+

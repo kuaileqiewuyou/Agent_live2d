@@ -156,13 +156,101 @@ def _build_tool_usage(tool_results: list[dict]) -> dict:
     }
 
 
-def _build_assistant_metadata(*, planner_output: dict, tool_results: list[dict], manual_tool_requests: list[dict]) -> dict:
+def _build_assistant_metadata(
+    *,
+    planner_output: dict,
+    tool_results: list[dict],
+    manual_tool_requests: list[dict],
+    provider_tool_calls: list[dict] | None = None,
+) -> dict:
     return {
         "plannerOutput": planner_output,
         "toolResults": tool_results,
         "toolUsage": _build_tool_usage(tool_results),
         "manualToolRequests": _normalize_manual_tool_requests(manual_tool_requests),
+        "providerToolCalls": provider_tool_calls if isinstance(provider_tool_calls, list) else [],
     }
+
+
+def _normalize_provider_tool_name(raw_name: str, *, fallback: str) -> str:
+    allowed = []
+    for char in raw_name:
+        if char.isalnum() or char in {"_", "-"}:
+            allowed.append(char.lower())
+        else:
+            allowed.append("_")
+    normalized = "".join(allowed).strip("_")
+    if not normalized:
+        normalized = fallback
+    if normalized[0].isdigit():
+        normalized = f"tool_{normalized}"
+    return normalized[:64]
+
+
+def _build_provider_tools(state: dict[str, Any]) -> list[dict]:
+    tools: list[dict] = []
+    used_names: set[str] = set()
+
+    for skill in state.get("enabled_skills", []):
+        if not isinstance(skill, dict):
+            continue
+        raw_name = str(skill.get("name") or "").strip()
+        if not raw_name:
+            continue
+        name = _normalize_provider_tool_name(raw_name, fallback="skill_tool")
+        if name in used_names:
+            name = _normalize_provider_tool_name(f"{name}_{skill.get('id', '')}", fallback="skill_tool")
+        used_names.add(name)
+        schema = skill.get("config_schema")
+        parameters = schema if isinstance(schema, dict) else {
+            "type": "object",
+            "additionalProperties": True,
+        }
+        tools.append(
+            {
+                "type": "function",
+                "function": {
+                    "name": name,
+                    "description": str(skill.get("description") or f"Skill: {raw_name}"),
+                    "parameters": parameters,
+                },
+            }
+        )
+
+    for server in state.get("enabled_mcp_servers", []):
+        if not isinstance(server, dict):
+            continue
+        capabilities = server.get("capabilities")
+        server_tools = capabilities.get("tools") if isinstance(capabilities, dict) else []
+        if not isinstance(server_tools, list):
+            continue
+        server_prefix = _normalize_provider_tool_name(str(server.get("name") or "mcp"), fallback="mcp")
+        for item in server_tools:
+            if not isinstance(item, dict):
+                continue
+            raw_tool_name = str(item.get("name") or "").strip()
+            if not raw_tool_name:
+                continue
+            composed = f"mcp_{server_prefix}_{raw_tool_name}"
+            name = _normalize_provider_tool_name(composed, fallback="mcp_tool")
+            if name in used_names:
+                name = _normalize_provider_tool_name(f"{name}_{server.get('id', '')}", fallback="mcp_tool")
+            used_names.add(name)
+            tools.append(
+                {
+                    "type": "function",
+                    "function": {
+                        "name": name,
+                        "description": str(item.get("description") or f"MCP tool: {raw_tool_name}"),
+                        "parameters": {
+                            "type": "object",
+                            "additionalProperties": True,
+                        },
+                    },
+                }
+            )
+
+    return tools
 
 
 def _extract_request_id(payload: dict) -> str | None:
@@ -740,6 +828,7 @@ class MessageService:
                     "base_url": conversation.model_config.base_url,
                     "api_key": conversation.model_config.api_key,
                     "model": conversation.model_config.model,
+                    "tool_call_supported": conversation.model_config.tool_call_supported,
                     "extra_config": conversation.model_config.extra_config,
                 },
                 "recent_messages": [
@@ -756,6 +845,8 @@ class MessageService:
                         "id": skill.id,
                         "name": skill.name,
                         "description": skill.description,
+                        "config_schema": skill.config_schema if isinstance(skill.config_schema, dict) else {},
+                        "runtime_type": skill.runtime_type,
                     }
                     for skill in conversation.skills
                     if skill.enabled
@@ -766,6 +857,9 @@ class MessageService:
                         "name": server.name,
                         "status": server.status,
                         "description": server.description,
+                        "transport_type": server.transport_type,
+                        "endpoint_or_command": server.endpoint_or_command,
+                        "capabilities": server.capabilities if isinstance(server.capabilities, dict) else {},
                     }
                     for server in conversation.mcp_servers
                     if server.enabled
@@ -776,8 +870,16 @@ class MessageService:
 
         try:
             provider = ProviderFactory.from_model_config(conversation.model_config)
+            provider_tools = _build_provider_tools(state)
+            use_provider_tools = bool(conversation.model_config.tool_call_supported and provider_tools)
             try:
-                provider_response = await provider.chat(state["prompt_messages"])
+                if use_provider_tools:
+                    provider_response = await provider.chat_with_tools(
+                        state["prompt_messages"],
+                        tools=provider_tools,
+                    )
+                else:
+                    provider_response = await provider.chat(state["prompt_messages"])
             except AppError:
                 raise
             except Exception as error:
@@ -786,6 +888,7 @@ class MessageService:
                 planner_output=state.get("planner_output", {}),
                 tool_results=state.get("tool_results", []),
                 manual_tool_requests=payload.get("manual_tool_requests", []),
+                provider_tool_calls=provider_response.get("tool_calls", []),
             )
             assistant_metadata = _attach_request_id(assistant_metadata, request_id)
             assistant_message = await self.repo.create(
@@ -892,6 +995,7 @@ class MessageService:
                         "base_url": conversation.model_config.base_url,
                         "api_key": conversation.model_config.api_key,
                         "model": conversation.model_config.model,
+                        "tool_call_supported": conversation.model_config.tool_call_supported,
                         "extra_config": conversation.model_config.extra_config,
                     },
                     "recent_messages": [
@@ -905,6 +1009,8 @@ class MessageService:
                             "id": skill.id,
                             "name": skill.name,
                             "description": skill.description,
+                            "config_schema": skill.config_schema if isinstance(skill.config_schema, dict) else {},
+                            "runtime_type": skill.runtime_type,
                         }
                         for skill in conversation.skills
                         if skill.enabled
@@ -915,6 +1021,9 @@ class MessageService:
                             "name": server.name,
                             "status": server.status,
                             "description": server.description,
+                            "transport_type": server.transport_type,
+                            "endpoint_or_command": server.endpoint_or_command,
+                            "capabilities": server.capabilities if isinstance(server.capabilities, dict) else {},
                         }
                         for server in conversation.mcp_servers
                         if server.enabled
@@ -930,19 +1039,34 @@ class MessageService:
                     yield _build_stream_event(event_name, event_data if isinstance(event_data, dict) else {})
 
             provider = ProviderFactory.from_model_config(conversation.model_config)
+            provider_tools = _build_provider_tools(prepared)
+            use_provider_tools = bool(conversation.model_config.tool_call_supported and provider_tools)
             chunks: list[str] = []
+            provider_tool_calls: list[dict] = []
             assistant_metadata = _build_assistant_metadata(
                 planner_output=prepared.get("planner_output", {}),
                 tool_results=prepared.get("tool_results", []),
                 manual_tool_requests=payload.get("manual_tool_requests", []),
+                provider_tool_calls=provider_tool_calls,
             )
             assistant_metadata = _attach_request_id(assistant_metadata, request_id)
             try:
-                async for chunk in provider.stream_chat(prepared["prompt_messages"]):
+                stream_iterator = (
+                    provider.stream_chat_with_tools(
+                        prepared["prompt_messages"],
+                        tools=provider_tools,
+                    )
+                    if use_provider_tools
+                    else provider.stream_chat(prepared["prompt_messages"])
+                )
+                async for chunk in stream_iterator:
                     if stop_event.is_set():
                         yield _build_stream_event("stopped", {"conversationId": conversation_id})
                         await self.session.commit()
                         return
+                    chunk_tool_calls = chunk.get("tool_calls")
+                    if isinstance(chunk_tool_calls, list) and chunk_tool_calls:
+                        provider_tool_calls.extend(chunk_tool_calls)
                     token = chunk.get("content", "")
                     if token:
                         chunks.append(token)
@@ -951,6 +1075,8 @@ class MessageService:
                 raise
             except Exception as error:
                 raise _to_provider_error(error) from error
+
+            assistant_metadata["providerToolCalls"] = provider_tool_calls
 
             assistant_message = await self.repo.create(
                 {

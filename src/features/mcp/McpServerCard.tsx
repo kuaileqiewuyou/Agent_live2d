@@ -1,11 +1,14 @@
-import { useState } from 'react'
+﻿import { useMemo, useState } from 'react'
 import {
   AlertCircle,
   ChevronDown,
   FolderOpen,
   Globe,
+  KeyRound,
   Loader2,
+  ShieldCheck,
   Terminal,
+  Timer,
   Trash2,
   Wifi,
   WifiOff,
@@ -16,10 +19,7 @@ import { cn, formatTime } from '@/utils'
 import { MCP_TRANSPORT_LABELS } from '@/constants'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import {
-  Card,
-  CardContent,
-} from '@/components/ui/card'
+import { Card, CardContent } from '@/components/ui/card'
 import {
   Collapsible,
   CollapsibleContent,
@@ -48,7 +48,7 @@ const STATUS_CONFIG: Record<
     icon: <Loader2 className="h-3 w-3 animate-spin" />,
   },
   error: {
-    label: '错误',
+    label: '异常',
     className: 'border-red-500/20 bg-red-500/10 text-red-600',
     icon: <AlertCircle className="h-3 w-3" />,
   },
@@ -62,6 +62,39 @@ interface McpServerCardProps {
   checking: boolean
 }
 
+function sourceLabel(source?: string) {
+  if (source === 'probe') return '实时探测'
+  if (source === 'cache') return '缓存回填'
+  return '未知来源'
+}
+
+function authSummary(server: MCPServer) {
+  const auth = server.advancedConfig?.auth
+  if (!auth) return '无'
+  if (auth.type === 'bearer') return 'Bearer Token'
+  if (auth.type === 'basic') return 'Basic Auth'
+  if (auth.type === 'apiKey') return `API Key (${auth.headerName || 'Header'})`
+  return '无'
+}
+
+function renderKvPreview(title: string, payload?: Record<string, string>) {
+  if (!payload || Object.keys(payload).length === 0) return null
+
+  return (
+    <div>
+      <div className="mb-1 text-[11px] font-medium text-(--color-muted-foreground)">{title}</div>
+      <div className="grid gap-1 rounded-md border border-(--color-border) bg-(--color-muted)/20 p-2 text-[11px]">
+        {Object.entries(payload).slice(0, 4).map(([key, value]) => (
+          <div key={key} className="flex gap-1.5">
+            <code className="shrink-0 text-(--color-primary)">{key}</code>
+            <span className="truncate text-(--color-muted-foreground)">{value}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 export function McpServerCard({
   server,
   onToggle,
@@ -70,9 +103,21 @@ export function McpServerCard({
   checking,
 }: McpServerCardProps) {
   const [expanded, setExpanded] = useState(false)
+
   const status = checking
     ? STATUS_CONFIG.checking
     : STATUS_CONFIG[server.connectionStatus]
+
+  const detailLine = useMemo(() => {
+    const capabilityDetail = server.capabilityMeta?.detail || server.lastCheckDetail
+    if (!capabilityDetail) return null
+    return capabilityDetail.length > 120 ? `${capabilityDetail.slice(0, 120)}...` : capabilityDetail
+  }, [server.capabilityMeta?.detail, server.lastCheckDetail])
+
+  const hasCapabilities =
+    (server.tools && server.tools.length > 0)
+    || (server.resources && server.resources.length > 0)
+    || (server.prompts && server.prompts.length > 0)
 
   return (
     <Card
@@ -114,7 +159,7 @@ export function McpServerCard({
         </div>
 
         <p className="mb-3 line-clamp-2 text-xs leading-relaxed text-(--color-muted-foreground)">
-          {server.description}
+          {server.description || '未填写描述'}
         </p>
 
         <div className="mb-3 rounded-md bg-(--color-muted) px-3 py-1.5">
@@ -123,7 +168,13 @@ export function McpServerCard({
           </code>
         </div>
 
-        <div className="mb-3 flex items-center gap-4 text-xs text-(--color-muted-foreground)">
+        {detailLine && (
+          <div className="mb-3 rounded-md border border-(--color-border) bg-(--color-background) px-3 py-2 text-xs text-(--color-muted-foreground)">
+            连接详情：{detailLine}
+          </div>
+        )}
+
+        <div className="mb-3 flex flex-wrap items-center gap-3 text-xs text-(--color-muted-foreground)">
           <span className="flex items-center gap-1">
             <Wrench className="h-3.5 w-3.5" />
             工具：{server.toolCount} 个
@@ -132,8 +183,12 @@ export function McpServerCard({
             <FolderOpen className="h-3.5 w-3.5" />
             资源：{server.resourceCount} 个
           </span>
+          <span className="flex items-center gap-1">
+            <Wrench className="h-3.5 w-3.5" />
+            Prompt：{server.promptCount || 0} 个
+          </span>
           {server.lastCheckedAt && (
-            <span className="ml-auto">
+            <span>
               上次检查：{formatTime(server.lastCheckedAt)}
             </span>
           )}
@@ -152,7 +207,7 @@ export function McpServerCard({
             ) : (
               <Wifi className="h-3.5 w-3.5" />
             )}
-            检查连接
+            连接测试
           </Button>
           <Button
             variant="ghost"
@@ -165,27 +220,68 @@ export function McpServerCard({
           </Button>
         </div>
 
-        {((server.tools && server.tools.length > 0)
-          || (server.resources && server.resources.length > 0)) && (
-          <>
-            <Separator className="my-3" />
-            <Collapsible open={expanded} onOpenChange={setExpanded}>
-              <CollapsibleTrigger asChild>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="h-7 w-full gap-1.5 text-xs text-(--color-muted-foreground)"
-                >
-                  <ChevronDown
-                    className={cn(
-                      'h-3.5 w-3.5 transition-transform',
-                      expanded && 'rotate-180',
-                    )}
-                  />
-                  查看详情
-                </Button>
-              </CollapsibleTrigger>
-              <CollapsibleContent className="space-y-3 pt-3">
+        <Separator className="my-3" />
+        <Collapsible open={expanded} onOpenChange={setExpanded}>
+          <CollapsibleTrigger asChild>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 w-full gap-1.5 text-xs text-(--color-muted-foreground)"
+            >
+              <ChevronDown
+                className={cn(
+                  'h-3.5 w-3.5 transition-transform',
+                  expanded && 'rotate-180',
+                )}
+              />
+              查看详情
+            </Button>
+          </CollapsibleTrigger>
+
+          <CollapsibleContent className="space-y-3 pt-3">
+            <div className="rounded-md border border-(--color-border) bg-(--color-muted)/20 p-3">
+              <div className="mb-2 flex items-center gap-1.5 text-xs font-medium text-(--color-muted-foreground)">
+                <ShieldCheck className="h-3.5 w-3.5" />
+                连接测试详情
+              </div>
+              <div className="space-y-1 text-[11px] text-(--color-muted-foreground)">
+                <div>来源：{sourceLabel(server.capabilityMeta?.source)}</div>
+                <div>最近探测：{server.capabilityMeta?.checkedAt ? formatTime(server.capabilityMeta.checkedAt) : '暂无'}</div>
+                <div>最近成功：{server.capabilityMeta?.lastSuccessAt ? formatTime(server.capabilityMeta.lastSuccessAt) : '暂无'}</div>
+                <div>最近错误：{server.capabilityMeta?.lastError || '无'}</div>
+              </div>
+            </div>
+
+            <div className="rounded-md border border-(--color-border) bg-(--color-muted)/20 p-3">
+              <div className="mb-2 flex items-center gap-1.5 text-xs font-medium text-(--color-muted-foreground)">
+                <KeyRound className="h-3.5 w-3.5" />
+                高级配置
+              </div>
+
+              <div className="grid gap-2 text-[11px] text-(--color-muted-foreground)">
+                <div className="flex items-center gap-1.5">
+                  <Timer className="h-3.5 w-3.5" />
+                  <span>timeoutMs：{server.advancedConfig?.timeoutMs || '默认'}</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <ShieldCheck className="h-3.5 w-3.5" />
+                  <span>认证方式：{authSummary(server)}</span>
+                </div>
+                {server.transportType === 'stdio' && (
+                  <div>
+                    args：{server.advancedConfig?.args?.length ? server.advancedConfig.args.join(' ') : '无'}
+                  </div>
+                )}
+              </div>
+
+              <div className="mt-2 space-y-2">
+                {renderKvPreview('Headers', server.advancedConfig?.headers)}
+                {server.transportType === 'stdio' && renderKvPreview('Env', server.advancedConfig?.env)}
+              </div>
+            </div>
+
+            {hasCapabilities && (
+              <div className="space-y-3">
                 {server.tools && server.tools.length > 0 && (
                   <div>
                     <h4 className="mb-2 flex items-center gap-1.5 text-xs font-medium text-(--color-muted-foreground)">
@@ -235,11 +331,12 @@ export function McpServerCard({
                     </div>
                   </div>
                 )}
-              </CollapsibleContent>
-            </Collapsible>
-          </>
-        )}
+              </div>
+            )}
+          </CollapsibleContent>
+        </Collapsible>
       </CardContent>
     </Card>
   )
 }
+

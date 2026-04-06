@@ -1,8 +1,11 @@
-# Agent Live2D 前后端接口契约
+﻿# Agent Live2D 前后端接口契约
 
-本文档定义当前仓库前后端联调时使用的核心后端接口契约。
+本文档定义当前仓库前后端联调时使用的后端接口契约。
+接口行为以本文档为准，统一前缀为 `/api`。
 
-统一前缀为 `/api`，统一响应结构如下：
+## 0. 通用约定
+
+### 0.1 统一响应结构
 
 ```json
 {
@@ -12,11 +15,41 @@
 }
 ```
 
+错误场景：
+
+```json
+{
+  "success": false,
+  "data": {
+    "code": "not_found"
+  },
+  "message": "persona not found"
+}
+```
+
+### 0.2 命名与时间格式
+- 请求与响应字段统一使用 `camelCase`
+- `id` 为字符串（UUID）
+- 时间字段使用 ISO8601（UTC），例如 `2026-03-31T00:00:00Z`
+
+### 0.3 List 响应约定
+
+```json
+{
+  "success": true,
+  "data": {
+    "items": [],
+    "total": 0
+  },
+  "message": null
+}
+```
+
 ## 1. 健康检查
 
 ### `GET /api/health`
 
-返回：
+响应示例：
 
 ```json
 {
@@ -25,43 +58,37 @@
     "status": "ok",
     "appName": "Agent Live2D Backend",
     "environment": "development"
-  }
+  },
+  "message": null
 }
 ```
 
 ## 2. Conversations
 
-### `GET /api/conversations`
-
-返回：
+### 会话对象
 
 ```json
 {
-  "success": true,
-  "data": {
-    "items": [
-      {
-        "id": "uuid",
-        "title": "新的会话",
-        "personaId": "uuid",
-        "modelConfigId": "uuid",
-        "layoutMode": "chat",
-        "enabledSkillIds": [],
-        "enabledMcpServerIds": [],
-        "pinned": false,
-        "lastMessage": "最近一条消息",
-        "persona": null,
-        "modelConfigDetail": null,
-        "skills": [],
-        "mcpServers": [],
-        "createdAt": "2026-03-31T00:00:00Z",
-        "updatedAt": "2026-03-31T00:00:00Z"
-      }
-    ],
-    "total": 1
-  }
+  "id": "uuid",
+  "title": "新的会话",
+  "personaId": "uuid",
+  "modelConfigId": "uuid",
+  "layoutMode": "chat",
+  "enabledSkillIds": [],
+  "enabledMcpServerIds": [],
+  "pinned": false,
+  "lastMessage": "最近一条消息",
+  "persona": null,
+  "modelConfigDetail": null,
+  "skills": [],
+  "mcpServers": [],
+  "createdAt": "2026-03-31T00:00:00Z",
+  "updatedAt": "2026-03-31T00:00:00Z"
 }
 ```
+
+### `GET /api/conversations`
+- 返回 `ListData<Conversation>`
 
 ### `POST /api/conversations`
 
@@ -80,27 +107,16 @@
 }
 ```
 
-### `GET /api/conversations/{conversation_id}`
+说明：
+- `inheritPersonaLongTermMemory` 当前作为兼容字段保留，不影响最小主链路创建。
 
-返回单个会话详情，结构同列表项。
+### `GET /api/conversations/{conversationId}`
+- 返回单个 `Conversation`
 
-### `PATCH /api/conversations/{conversation_id}`
+### `PATCH /api/conversations/{conversationId}`
+- 支持部分更新：`title/personaId/modelConfigId/layoutMode/enabledSkillIds/enabledMcpServerIds/pinned`
 
-支持局部更新：
-
-```json
-{
-  "title": "重命名后的标题",
-  "layoutMode": "companion",
-  "enabledSkillIds": ["uuid"],
-  "enabledMcpServerIds": ["uuid"],
-  "pinned": true
-}
-```
-
-### `DELETE /api/conversations/{conversation_id}`
-
-返回：
+### `DELETE /api/conversations/{conversationId}`
 
 ```json
 {
@@ -108,43 +124,70 @@
   "data": {
     "deleted": true,
     "id": "uuid"
-  }
+  },
+  "message": null
 }
 ```
 
 ## 3. Messages
 
-### `GET /api/conversations/{conversation_id}/messages`
-
-返回：
+### 消息对象
 
 ```json
 {
-  "success": true,
-  "data": {
-    "items": [
-      {
-        "id": "uuid",
-        "conversationId": "uuid",
-        "role": "user",
-        "senderType": "user",
-        "senderName": "User",
-        "agentName": null,
-        "content": "你好",
-        "reasoning": null,
-        "toolName": null,
-        "toolStatus": null,
-        "metadata": {},
-        "attachments": [],
-        "createdAt": "2026-03-31T00:00:00Z"
-      }
-    ],
-    "total": 1
-  }
+  "id": "uuid",
+  "conversationId": "uuid",
+  "role": "user",
+  "senderType": "user",
+  "senderName": "User",
+  "agentName": null,
+  "content": "你好",
+  "reasoning": null,
+  "toolName": null,
+  "toolStatus": null,
+  "metadata": {},
+  "attachments": [],
+  "createdAt": "2026-03-31T00:00:00Z"
 }
 ```
 
-### `POST /api/conversations/{conversation_id}/messages`
+### 附件对象（若传）
+
+```json
+{
+  "id": "att-1",
+  "name": "note.txt",
+  "type": "text/plain",
+  "url": "https://example.com/note.txt",
+  "size": 123
+}
+```
+
+### 手动工具请求对象 `manualToolRequests[]`
+
+```json
+{
+  "id": "manual-1",
+  "type": "skill",
+  "targetId": "uuid",
+  "label": "summary skill",
+  "inputText": "goal: summarize",
+  "inputParams": {
+    "goal": "summary"
+  },
+  "autoExecute": false
+}
+```
+
+说明：
+- `type` 仅支持 `skill` 或 `mcp`
+- API 层期望 `inputParams` 为键值对象（字符串键）
+- 后端会做参数归一化与 Skill schema 校验，非法时返回 `validation_error`
+
+### `GET /api/conversations/{conversationId}/messages`
+- 返回 `ListData<Message>`
+
+### `POST /api/conversations/{conversationId}/messages`
 
 请求体：
 
@@ -152,11 +195,14 @@
 {
   "content": "你好，今天过得怎么样？",
   "attachments": [],
-  "metadata": {}
+  "metadata": {
+    "requestId": "req-001"
+  },
+  "manualToolRequests": []
 }
 ```
 
-返回：
+响应体：
 
 ```json
 {
@@ -164,18 +210,16 @@
   "data": {
     "userMessage": {},
     "assistantMessage": {}
-  }
+  },
+  "message": null
 }
 ```
 
-### `POST /api/conversations/{conversation_id}/messages/stream`
+### `POST /api/conversations/{conversationId}/messages/stream`
+- 请求体与 `POST /messages` 相同
+- 返回类型：`text/event-stream`
 
-请求体同上。
-
-返回类型：`text/event-stream`
-
-SSE 事件（当前主链路）：
-
+SSE 事件（主链路）：
 - `message_created`
 - `thinking`
 - `tool_calling`
@@ -185,11 +229,17 @@ SSE 事件（当前主链路）：
 - `final_answer`
 - `stopped`
 
-核心事件 payload 字段约定：
+`live2dState` 约定：
+- 取值：`idle` / `thinking` / `talking` / `error`
+- 对以上主链路事件，后端默认会附带 `live2dState`
+- 前端消费时若 payload 含 `live2dState` 应优先使用
 
-- `live2dState`：可选，取值为 `idle` / `thinking` / `talking` / `error`
-- 对于上述主链路事件，后端默认会附带 `live2dState`
-- 前端消费时若 payload 中存在 `live2dState`，应优先使用；仅在缺失时按 `event` 推断状态
+关键事件字段：
+- `message_created`: `{ "userMessageId": "..." }`
+- `token`: `{ "content": "..." }`
+- `tool_result`: 可能包含 `type/name/label/title/summary/result/manual/executionMode/error/toolName/inputParams`
+- `final_answer`: `{ "messageId": "...", "content": "...", "toolUsage": {...}, "manualToolRequests": [...] }`
+- `stopped`: `{ "conversationId": "..." }`
 
 示例：
 
@@ -198,16 +248,13 @@ event: token
 data: {"content":"你好","live2dState":"talking"}
 
 event: final_answer
-data: {"messageId":"uuid","content":"你好，我在。","live2dState":"idle"}
+data: {"messageId":"uuid","content":"你好，我在。","toolUsage":{"totalCount":2},"manualToolRequests":[],"live2dState":"idle"}
 ```
 
-### `POST /api/conversations/{conversation_id}/messages/regenerate`
+### `POST /api/conversations/{conversationId}/messages/regenerate`
+- 基于最近一条 user 消息重新生成 assistant 回复
 
-基于最近一条用户消息重新生成回复。
-
-### `POST /api/conversations/{conversation_id}/messages/stop`
-
-返回：
+### `POST /api/conversations/{conversationId}/messages/stop`
 
 ```json
 {
@@ -215,16 +262,35 @@ data: {"messageId":"uuid","content":"你好，我在。","live2dState":"idle"}
   "data": {
     "stopped": true,
     "conversationId": "uuid"
-  }
+  },
+  "message": null
+}
+```
+
+### `POST /api/conversations/{conversationId}/messages/dedupe`
+
+```json
+{
+  "success": true,
+  "data": {
+    "conversationId": "uuid",
+    "totalBefore": 24,
+    "totalAfter": 20,
+    "deletedCount": 4,
+    "deletedTurnCount": 2,
+    "deletedMessageIds": ["uuid-1", "uuid-2"]
+  },
+  "message": null
 }
 ```
 
 ## 4. Personas
 
-### Persona 字段
+### Persona 对象
 
 ```json
 {
+  "id": "uuid",
   "name": "晨曦",
   "avatar": "avatar.png",
   "description": "温柔陪伴型角色",
@@ -235,24 +301,26 @@ data: {"messageId":"uuid","content":"你好，我在。","live2dState":"idle"}
   "longTermMemoryEnabled": true,
   "live2dModel": "haru.model3.json",
   "defaultLayoutMode": "companion",
-  "systemPromptTemplate": "你是 {{persona_name}}，请始终以她的人设说话。"
+  "systemPromptTemplate": "你是 {{persona_name}}，请始终以她的人设说话。",
+  "createdAt": "2026-03-31T00:00:00Z",
+  "updatedAt": "2026-03-31T00:00:00Z"
 }
 ```
 
 接口：
-
 - `GET /api/personas`
 - `POST /api/personas`
-- `GET /api/personas/{persona_id}`
-- `PATCH /api/personas/{persona_id}`
-- `DELETE /api/personas/{persona_id}`
+- `GET /api/personas/{personaId}`
+- `PATCH /api/personas/{personaId}`
+- `DELETE /api/personas/{personaId}`
 
 ## 5. Model Configs
 
-### 字段
+### Model Config 对象
 
 ```json
 {
+  "id": "uuid",
   "name": "本地 OpenAI 兼容模型",
   "provider": "openai-compatible",
   "baseUrl": "http://localhost:11434/v1",
@@ -263,79 +331,181 @@ data: {"messageId":"uuid","content":"你好，我在。","live2dState":"idle"}
   "isDefault": true,
   "extraConfig": {
     "temperature": 0.7
-  }
+  },
+  "createdAt": "2026-03-31T00:00:00Z",
+  "updatedAt": "2026-03-31T00:00:00Z"
 }
 ```
 
 接口：
-
 - `GET /api/models/configs`
 - `POST /api/models/configs`
-- `GET /api/models/configs/{config_id}`
-- `PATCH /api/models/configs/{config_id}`
-- `DELETE /api/models/configs/{config_id}`
-- `POST /api/models/configs/{config_id}/test`
+- `GET /api/models/configs/{configId}`
+- `PATCH /api/models/configs/{configId}`
+- `DELETE /api/models/configs/{configId}`
+- `POST /api/models/configs/{configId}/test`
 
-## 6. Skills
-
-### 字段
+`POST /test` 响应：
 
 ```json
 {
-  "name": "总结助手",
+  "success": true,
+  "data": {
+    "ok": true,
+    "provider": "openai-compatible",
+    "model": "gpt-test",
+    "detail": "connection ok"
+  },
+  "message": null
+}
+```
+
+## 6. Skills
+
+### Skill 对象
+
+```json
+{
+  "id": "uuid",
+  "name": "summary-helper",
   "description": "生成阶段性总结",
   "version": "0.1.0",
   "author": "backend",
   "tags": ["summary"],
   "enabled": true,
   "scope": ["conversation"],
-  "configSchema": {"type":"object"},
-  "runtimeType": "workflow"
+  "configSchema": {
+    "type": "object"
+  },
+  "runtimeType": "workflow",
+  "createdAt": "2026-03-31T00:00:00Z",
+  "updatedAt": "2026-03-31T00:00:00Z"
 }
 ```
 
 接口：
-
 - `GET /api/skills`
 - `POST /api/skills`
-- `GET /api/skills/{skill_id}`
-- `PATCH /api/skills/{skill_id}`
-- `DELETE /api/skills/{skill_id}`
-- `POST /api/skills/{skill_id}/toggle`
+- `GET /api/skills/{skillId}`
+- `PATCH /api/skills/{skillId}`
+- `DELETE /api/skills/{skillId}`
+- `POST /api/skills/{skillId}/toggle`
 
 ## 7. MCP Servers
 
-### 字段
+### MCP Server 对象
+
+```json
+{
+  "id": "uuid",
+  "name": "Local MCP",
+  "description": "本地 MCP 服务",
+  "transportType": "http",
+  "endpointOrCommand": "http://localhost:3001/mcp",
+  "enabled": true,
+  "status": "connected",
+  "toolCount": 1,
+  "resourceCount": 0,
+  "promptCount": 0,
+  "lastCheckedAt": "2026-04-06T10:00:00Z",
+  "capabilities": {
+    "tools": [{"name": "echo", "description": "echo"}],
+    "resources": [],
+    "prompts": [],
+    "config": {
+      "timeoutMs": 1500,
+      "headers": {"X-Trace-Id": "trace-1"},
+      "auth": {"type": "bearer", "token": "***"}
+    },
+    "detail": "mcp rpc reachable",
+    "source": "probe",
+    "checkedAt": "2026-04-06T10:00:00Z",
+    "lastSuccessAt": "2026-04-06T10:00:00Z",
+    "lastError": null
+  },
+  "advancedConfig": {
+    "timeoutMs": 1500,
+    "headers": {"X-Trace-Id": "trace-1"},
+    "auth": {"type": "bearer", "token": "***"}
+  },
+  "createdAt": "2026-03-31T00:00:00Z",
+  "updatedAt": "2026-04-06T10:00:00Z"
+}
+```
+
+### 创建/更新请求支持字段
 
 ```json
 {
   "name": "Local MCP",
   "description": "本地 MCP 服务",
   "transportType": "http",
-  "endpointOrCommand": "http://localhost:3001",
-  "enabled": true
+  "endpointOrCommand": "http://localhost:3001/mcp",
+  "enabled": true,
+  "advancedConfig": {
+    "timeoutMs": 1500,
+    "headers": {
+      "X-Trace-Id": "trace-1"
+    },
+    "env": {
+      "HTTP_PROXY": "http://127.0.0.1:7890"
+    },
+    "args": ["--mode", "dev"],
+    "auth": {
+      "type": "bearer",
+      "token": "token-xxx"
+    }
+  }
 }
 ```
 
-接口：
+`auth.type` 支持：
+- `bearer`：`token`
+- `basic`：`username` + `password`
+- `apiKey`：`headerName` + `value`
 
+`transportType=stdio` 约定：
+- `endpointOrCommand` 为可执行命令（如 `python`、`node`、本地可执行文件）
+- `advancedConfig.args` 会按顺序追加到命令参数
+- `advancedConfig.env` 会合并进子进程环境变量
+- `/check` 与聊天主链路中的手动 MCP 执行都会复用同一组 `advancedConfig`
+
+接口：
 - `GET /api/mcp/servers`
 - `POST /api/mcp/servers`
-- `GET /api/mcp/servers/{server_id}`
-- `PATCH /api/mcp/servers/{server_id}`
-- `DELETE /api/mcp/servers/{server_id}`
-- `POST /api/mcp/servers/{server_id}/check`
-- `GET /api/mcp/servers/{server_id}/capabilities`
+- `GET /api/mcp/servers/{serverId}`
+- `PATCH /api/mcp/servers/{serverId}`
+- `DELETE /api/mcp/servers/{serverId}`
+- `POST /api/mcp/servers/{serverId}/check`
+- `GET /api/mcp/servers/{serverId}/capabilities`
+
+`POST /check` 响应：
+
+```json
+{
+  "success": true,
+  "data": {
+    "ok": true,
+    "status": "connected",
+    "toolCount": 1,
+    "resourceCount": 0,
+    "promptCount": 0,
+    "detail": "mcp rpc reachable (1 tools)",
+    "usedCache": false
+  },
+  "message": null
+}
+```
 
 ## 8. Memory
 
-### `GET /api/memory/long-term`
+接口：
+- `GET /api/memory/long-term`
+- `POST /api/memory/long-term`
+- `POST /api/memory/search`
+- `POST /api/memory/summarize`
 
-列出长期记忆。
-
-### `POST /api/memory/long-term`
-
-请求体：
+### `POST /api/memory/long-term` 请求体
 
 ```json
 {
@@ -344,13 +514,13 @@ data: {"messageId":"uuid","content":"你好，我在。","live2dState":"idle"}
   "memoryScope": "persona",
   "content": "用户偏好：喜欢爵士乐",
   "tags": ["preference", "music"],
-  "metadata": {"source":"chat"}
+  "metadata": {
+    "source": "chat"
+  }
 }
 ```
 
-### `POST /api/memory/search`
-
-请求体：
+### `POST /api/memory/search` 请求体
 
 ```json
 {
@@ -363,9 +533,7 @@ data: {"messageId":"uuid","content":"你好，我在。","live2dState":"idle"}
 }
 ```
 
-### `POST /api/memory/summarize`
-
-请求体：
+### `POST /api/memory/summarize` 请求体
 
 ```json
 {
@@ -374,57 +542,98 @@ data: {"messageId":"uuid","content":"你好，我在。","live2dState":"idle"}
 }
 ```
 
-## 9. Meta
+## 9. Settings
 
+接口：
+- `GET /api/settings`
+- `PATCH /api/settings`
+
+Settings 对象：
+
+```json
+{
+  "theme": "system",
+  "backgroundImage": null,
+  "backgroundBlur": 0,
+  "backgroundOverlayOpacity": 0.5,
+  "defaultLayoutMode": "chat",
+  "language": "zh-CN"
+}
+```
+
+## 10. Meta
+
+接口：
 - `GET /api/meta/providers`
 - `GET /api/meta/layout-modes`
 - `GET /api/meta/live2d-states`
 
-## 10. 错误约定
-
-所有错误响应保持统一结构：
-
-```json
-{
-  "success": false,
-  "data": {},
-  "message": "persona not found"
-}
-```
-
-## 11. 消息去重清理
-
-### `POST /api/conversations/{conversation_id}/messages/dedupe`
-
-用于清理同一会话历史中的明显重复轮次。
-
-返回示例：
+响应结构：
 
 ```json
 {
   "success": true,
   "data": {
-    "conversationId": "uuid",
-    "totalBefore": 24,
-    "totalAfter": 20,
-    "deletedCount": 4,
-    "deletedTurnCount": 2,
-    "deletedMessageIds": ["uuid-1", "uuid-2", "uuid-3", "uuid-4"]
-  }
+    "items": []
+  },
+  "message": null
+}
+```
+
+## 11. 错误契约
+
+### 统一结构
+
+```json
+{
+  "success": false,
+  "data": {
+    "code": "validation_error"
+  },
+  "message": "manualToolRequests[0] invalid params: goal is required"
+}
+```
+
+### 常见错误码
+- `not_found`
+- `conflict`
+- `validation_error`
+- `provider_error`
+- `request_in_progress`
+- `regenerate_not_available`
+- `internal_error`
+
+### 参数校验错误（示例）
+当手动 Skill 参数不合法时，`data` 中会附带 `issues`：
+
+```json
+{
+  "success": false,
+  "data": {
+    "code": "validation_error",
+    "source": "manual_tool_requests",
+    "issues": [
+      {
+        "path": "manualToolRequests[0].inputParams.goal",
+        "field": "goal",
+        "reason": "goal is required",
+        "type": "required"
+      }
+    ]
+  },
+  "message": "manualToolRequests[0] invalid params: goal is required"
 }
 ```
 
 ## 12. 请求幂等（`metadata.requestId`）
 
-对于以下两个接口，客户端可以传入 `metadata.requestId`（字符串）：
-
-- `POST /api/conversations/{conversation_id}/messages`
-- `POST /api/conversations/{conversation_id}/messages/stream`
+以下接口支持传入 `metadata.requestId`：
+- `POST /api/conversations/{conversationId}/messages`
+- `POST /api/conversations/{conversationId}/messages/stream`
 
 行为约定：
-
-- 同一会话内重复提交相同 `requestId` 时，后端必须复用同一轮 user/assistant 结果，不再创建重复轮次。
-- 若第一次请求仍在处理中，后端可返回 `409`，错误码为 `request_in_progress`。
-- 推荐客户端行为：
-  - 一次用户轮次固定使用一个 `requestId`
-  - 当 stream 回退到非 stream 发送时，复用同一个 `requestId`
+- 同一会话内重复提交相同 `requestId` 时，后端复用同一轮 user/assistant 结果，不重复创建轮次
+- 若首个请求仍在处理中，后端可返回 `409` + `code=request_in_progress`
+- 推荐前端行为：
+  - 同一轮用户发送固定使用同一个 `requestId`
+  - `stream` 回退到非 `stream` 发送时复用该 `requestId`

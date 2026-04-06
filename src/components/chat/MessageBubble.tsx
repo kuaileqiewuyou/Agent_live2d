@@ -45,11 +45,13 @@ interface MessageBubbleProps {
 interface ToolReference {
   type?: 'skill' | 'mcp'
   name?: string
+  toolName?: string
   label?: string
   title?: string
   summary?: string
   result?: string
-  error?: string
+  error?: string | boolean
+  executionMode?: string
   manual?: boolean
   inputText?: string
   inputParams?: ManualToolInputParams
@@ -217,9 +219,22 @@ function getToolReferences(message: Message): ToolReference[] {
 
 function getToolReferenceSummary(reference: ToolReference) {
   if (reference.error) {
-    return reference.summary || reference.error || 'Tool 执行失败，已继续后续流程。'
+    if (typeof reference.error === 'string' && reference.error.trim()) {
+      return reference.summary || reference.error
+    }
+    return reference.summary || 'Tool 执行失败，已继续后续流程。'
   }
   return reference.summary || reference.result || '结果已纳入本轮回复。'
+}
+
+function getToolReferenceKeyFields(reference: ToolReference) {
+  const keyFields: string[] = []
+  if (reference.toolName?.trim()) keyFields.push(`toolName=${reference.toolName.trim()}`)
+  if (reference.executionMode?.trim()) keyFields.push(`executionMode=${reference.executionMode.trim()}`)
+  if (reference.error && typeof reference.error === 'string' && reference.error.trim()) {
+    keyFields.push(`error=${reference.error.trim()}`)
+  }
+  return keyFields
 }
 
 function getToolUsage(message: Message): ToolUsageMeta | null {
@@ -363,6 +378,13 @@ function ToolReferenceSummary({ references, manualToolRequests }: ToolReferenceS
                         <div className="mt-1 text-xs text-(--color-muted-foreground)">
                           {getToolReferenceSummary(item)}
                         </div>
+                        {getToolReferenceKeyFields(item).length > 0 && (
+                          <div className="mt-1 flex flex-wrap gap-1 text-[11px] text-(--color-muted-foreground)">
+                            {getToolReferenceKeyFields(item).map(field => (
+                              <code key={field} className="rounded bg-(--color-muted)/60 px-1.5 py-0.5">{field}</code>
+                            ))}
+                          </div>
+                        )}
                         <ToolInputParamsBlock
                           params={item.inputParams || request?.inputParams}
                           inputText={item.inputText || request?.inputText}
@@ -404,6 +426,13 @@ function ToolReferenceSummary({ references, manualToolRequests }: ToolReferenceS
                     <div className="mt-1 text-xs text-(--color-muted-foreground)">
                       {getToolReferenceSummary(item)}
                     </div>
+                    {getToolReferenceKeyFields(item).length > 0 && (
+                      <div className="mt-1 flex flex-wrap gap-1 text-[11px] text-(--color-muted-foreground)">
+                        {getToolReferenceKeyFields(item).map(field => (
+                          <code key={field} className="rounded bg-(--color-muted)/60 px-1.5 py-0.5">{field}</code>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>
