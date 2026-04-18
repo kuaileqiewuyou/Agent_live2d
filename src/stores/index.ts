@@ -1,5 +1,7 @@
 export { useAppStore } from './app.store'
 export { useConversationStore } from './conversation.store'
 export { useSettingsStore } from './settings.store'
+export { useChatAppearanceStore } from './chat-appearance.store'
 export { useUIStore } from './ui.store'
 export { useNotificationStore } from './notification.store'
+export { useFileAccessRequestStore } from './file-access-request.store'

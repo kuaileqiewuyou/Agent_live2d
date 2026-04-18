@@ -1,36 +1,16 @@
-import { useEffect, useRef, useState, type ChangeEvent, type ReactNode } from 'react'
-import {
-  ImageIcon,
-  Info,
-  MessageSquare,
-  Monitor,
-  Moon,
-  Settings,
-  Sun,
-  X,
-} from 'lucide-react'
+﻿import { useEffect, useRef, useState, type ChangeEvent, type ReactNode } from 'react'
+import { useNavigate } from 'react-router-dom'
+import { FolderOpen, ImageIcon, Info, MessageSquare, Monitor, Moon, Settings, ShieldCheck, Sun, X } from 'lucide-react'
 import type { ChatLayoutMode, ThemeMode } from '@/types'
 import { APP_NAME, LAYOUT_MODE_LABELS } from '@/constants'
 import { settingsService } from '@/services'
-import { useNotificationStore, useSettingsStore } from '@/stores'
+import { useChatAppearanceStore, useNotificationStore, useSettingsStore } from '@/stores'
 import { cn } from '@/utils'
 import { Button } from '@/components/ui/button'
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from '@/components/ui/card'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Label } from '@/components/ui/label'
 import { ScrollArea } from '@/components/ui/scroll-area'
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Separator } from '@/components/ui/separator'
 import { Slider } from '@/components/ui/slider'
 
@@ -41,25 +21,25 @@ const THEME_OPTIONS: { value: ThemeMode, label: string, icon: ReactNode }[] = [
 ]
 
 const SAMPLE_BACKGROUNDS = [
-  {
-    label: '渐变 A',
-    value: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
-  },
-  {
-    label: '渐变 B',
-    value: 'linear-gradient(135deg, #f093fb 0%, #f5576c 100%)',
-  },
-  {
-    label: '渐变 C',
-    value: 'linear-gradient(135deg, #4facfe 0%, #00f2fe 100%)',
-  },
+  { label: '渐变 A', value: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)' },
+  { label: '渐变 B', value: 'linear-gradient(135deg, #f093fb 0%, #f5576c 100%)' },
+  { label: '渐变 C', value: 'linear-gradient(135deg, #4facfe 0%, #00f2fe 100%)' },
 ]
 
 export function SettingsPage() {
+  const navigate = useNavigate()
   const { settings, setSettings, updateSettings } = useSettingsStore()
   const pushNotification = useNotificationStore((state) => state.push)
   const [loaded, setLoaded] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const fileAccessCount = settings.fileAccessFolders?.length || 0
+  const fileAccessBlacklistCount = settings.fileAccessBlacklist?.length || 0
+  const fileAccessAllowAll = settings.fileAccessAllowAll !== false
+  const bubbleOpacity = useChatAppearanceStore((state) => state.bubbleOpacity)
+  const inputOpacity = useChatAppearanceStore((state) => state.inputOpacity)
+  const setBubbleOpacity = useChatAppearanceStore((state) => state.setBubbleOpacity)
+  const setInputOpacity = useChatAppearanceStore((state) => state.setInputOpacity)
+  const resetChatAppearance = useChatAppearanceStore((state) => state.resetChatAppearance)
 
   useEffect(() => {
     async function loadSettings() {
@@ -124,6 +104,14 @@ export function SettingsPage() {
     void handleUpdateSettings({ defaultLayoutMode: mode })
   }
 
+  function handleBubbleOpacityChange(value: number[]) {
+    setBubbleOpacity(value[0] ?? 0.8)
+  }
+
+  function handleInputOpacityChange(value: number[]) {
+    setInputOpacity(value[0] ?? 0.8)
+  }
+
   function handleChooseImage() {
     fileInputRef.current?.click()
   }
@@ -131,10 +119,7 @@ export function SettingsPage() {
   function handleFileChange(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0]
     event.target.value = ''
-
-    if (!file) {
-      return
-    }
+    if (!file) return
 
     if (!file.type.startsWith('image/')) {
       pushNotification({
@@ -165,7 +150,6 @@ export function SettingsPage() {
         })
         return
       }
-
       void handleUpdateSettings({ backgroundImage: result })
     }
     reader.onerror = () => {
@@ -195,15 +179,32 @@ export function SettingsPage() {
           </div>
           <div>
             <h1 className="text-xl font-bold">设置</h1>
-            <p className="text-xs text-(--color-muted-foreground)">
-              自定义应用外观和默认行为
-            </p>
+            <p className="text-xs text-(--color-muted-foreground)">自定义应用外观和默认行为</p>
           </div>
         </div>
       </div>
 
       <ScrollArea className="flex-1 px-6">
         <div className="max-w-2xl space-y-6 pb-6">
+          <Card>
+            <CardHeader className="pb-4">
+              <div className="flex items-center gap-2">
+                <ShieldCheck className="h-4.5 w-4.5 text-(--color-muted-foreground)" />
+                <CardTitle className="text-base">文件访问权限</CardTitle>
+              </div>
+              <CardDescription>
+                当前策略：compat。完全访问 {fileAccessAllowAll ? '开启' : '关闭'}，白名单 {fileAccessCount} 项，黑名单 {fileAccessBlacklistCount} 项。
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-2">
+              <Button type="button" variant="outline" className="gap-2" onClick={() => navigate('/settings/file-access')}>
+                <FolderOpen className="h-4 w-4" />
+                文件访问权限详细设置
+              </Button>
+              <p className="text-xs text-(--color-muted-foreground)">Live2D 与 MCP 会共用该策略进行本地路径门控（黑名单优先）。</p>
+            </CardContent>
+          </Card>
+
           <Card>
             <CardHeader className="pb-4">
               <div className="flex items-center gap-2">
@@ -221,10 +222,7 @@ export function SettingsPage() {
                       key={option.value}
                       variant={settings.theme === option.value ? 'default' : 'outline'}
                       size="sm"
-                      className={cn(
-                        'flex-1 gap-2',
-                        settings.theme === option.value && 'shadow-sm',
-                      )}
+                      className={cn('flex-1 gap-2', settings.theme === option.value && 'shadow-sm')}
                       onClick={() => handleSetTheme(option.value)}
                     >
                       {option.icon}
@@ -246,12 +244,7 @@ export function SettingsPage() {
                   onChange={handleFileChange}
                 />
                 <div className="flex flex-wrap items-center gap-2">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="gap-1.5"
-                    onClick={handleChooseImage}
-                  >
+                  <Button variant="outline" size="sm" className="gap-1.5" onClick={handleChooseImage}>
                     <ImageIcon className="h-4 w-4" />
                     上传背景图
                   </Button>
@@ -268,13 +261,11 @@ export function SettingsPage() {
                   )}
                 </div>
                 <p className="text-xs text-(--color-muted-foreground)">
-                  Web 版支持直接上传本地图片，桌面端后续可再补文件路径接入。
+                  Web 版支持直接上传本地图片；桌面端也可继续使用该方式。
                 </p>
 
                 <div className="space-y-2">
-                  <Label className="text-xs text-(--color-muted-foreground)">
-                    示例背景
-                  </Label>
+                  <Label className="text-xs text-(--color-muted-foreground)">示例背景</Label>
                   <div className="flex gap-2">
                     {SAMPLE_BACKGROUNDS.map(background => (
                       <button
@@ -297,18 +288,13 @@ export function SettingsPage() {
 
                 {settings.backgroundImage && (
                   <div className="space-y-2">
-                    <Label className="text-xs text-(--color-muted-foreground)">
-                      预览
-                    </Label>
+                    <Label className="text-xs text-(--color-muted-foreground)">预览</Label>
                     <div
                       className="relative h-24 w-full overflow-hidden rounded-lg border border-(--color-border)"
                       style={{ background: settings.backgroundImage }}
                     >
                       {settings.backgroundBlur > 0 && (
-                        <div
-                          className="absolute inset-0"
-                          style={{ backdropFilter: `blur(${settings.backgroundBlur}px)` }}
-                        />
+                        <div className="absolute inset-0" style={{ backdropFilter: `blur(${settings.backgroundBlur}px)` }} />
                       )}
                       {settings.backgroundOverlayOpacity > 0 && (
                         <div
@@ -326,17 +312,9 @@ export function SettingsPage() {
               <div className="space-y-3">
                 <div className="flex items-center justify-between">
                   <Label className="text-sm font-medium">背景模糊度</Label>
-                  <span className="text-xs tabular-nums text-(--color-muted-foreground)">
-                    {settings.backgroundBlur}px
-                  </span>
+                  <span className="text-xs tabular-nums text-(--color-muted-foreground)">{settings.backgroundBlur}px</span>
                 </div>
-                <Slider
-                  value={[settings.backgroundBlur]}
-                  min={0}
-                  max={20}
-                  step={1}
-                  onValueChange={handleBlurChange}
-                />
+                <Slider value={[settings.backgroundBlur]} min={0} max={20} step={1} onValueChange={handleBlurChange} />
               </div>
 
               <Separator />
@@ -348,13 +326,38 @@ export function SettingsPage() {
                     {settings.backgroundOverlayOpacity.toFixed(2)}
                   </span>
                 </div>
-                <Slider
-                  value={[settings.backgroundOverlayOpacity]}
-                  min={0}
-                  max={1}
-                  step={0.05}
-                  onValueChange={handleOverlayChange}
-                />
+                <Slider value={[settings.backgroundOverlayOpacity]} min={0} max={1} step={0.05} onValueChange={handleOverlayChange} />
+              </div>
+
+              <Separator />
+
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <Label className="text-sm font-medium">聊天气泡透明度</Label>
+                  <span className="text-xs tabular-nums text-(--color-muted-foreground)">
+                    {bubbleOpacity.toFixed(2)}
+                  </span>
+                </div>
+                <Slider value={[bubbleOpacity]} min={0.2} max={1} step={0.05} onValueChange={handleBubbleOpacityChange} />
+                <p className="text-xs text-(--color-muted-foreground)">应用到用户/助手聊天气泡（风格与左侧边栏一致，含毛玻璃）。</p>
+              </div>
+
+              <Separator />
+
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <Label className="text-sm font-medium">输入区透明度</Label>
+                  <span className="text-xs tabular-nums text-(--color-muted-foreground)">
+                    {inputOpacity.toFixed(2)}
+                  </span>
+                </div>
+                <Slider value={[inputOpacity]} min={0.2} max={1} step={0.05} onValueChange={handleInputOpacityChange} />
+                <div className="flex items-center justify-between">
+                  <p className="text-xs text-(--color-muted-foreground)">应用到输入区容器与输入框背景（不影响文字可读性）。</p>
+                  <Button type="button" variant="outline" size="sm" onClick={resetChatAppearance}>
+                    恢复默认
+                  </Button>
+                </div>
               </div>
             </CardContent>
           </Card>
@@ -371,14 +374,9 @@ export function SettingsPage() {
               <div className="flex items-center justify-between gap-4">
                 <div>
                   <Label className="text-sm font-medium">默认聊天模式</Label>
-                  <p className="mt-0.5 text-xs text-(--color-muted-foreground)">
-                    新建对话时使用的默认布局。
-                  </p>
+                  <p className="mt-0.5 text-xs text-(--color-muted-foreground)">新建对话时使用的默认布局。</p>
                 </div>
-                <Select
-                  value={settings.defaultLayoutMode}
-                  onValueChange={(value: ChatLayoutMode) => handleLayoutModeChange(value)}
-                >
+                <Select value={settings.defaultLayoutMode} onValueChange={(value: ChatLayoutMode) => handleLayoutModeChange(value)}>
                   <SelectTrigger className="w-44">
                     <SelectValue />
                   </SelectTrigger>

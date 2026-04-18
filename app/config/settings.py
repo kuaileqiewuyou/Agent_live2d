@@ -20,6 +20,9 @@ class Settings(BaseSettings):
             "http://localhost:1420",
         ]
     )
+    cors_origin_regex: str = (
+        r"^(https?://(localhost|127\.0\.0\.1)(:\d+)?|tauri://localhost|https?://tauri\.localhost)$"
+    )
 
     data_dir: Path = Field(default=Path("data"))
     database_url: str = "sqlite+aiosqlite:///./data/app.db"

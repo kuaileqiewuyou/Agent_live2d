@@ -87,6 +87,86 @@ describe('messageService.streamMessage', () => {
     expect(handlers.onFinalAnswer).toHaveBeenCalledWith(expect.objectContaining({ messageId: 'a-1', content: '你好' }))
   })
 
+  it('dispatches ops install SSE events to dedicated handlers', async () => {
+    const response = createSseResponse([
+      'event: ops_install_preview\ndata: {"id":"ops-session-1","steps":[{"id":"create_or_update_server","name":"create_or_update_server","title":"create","status":"pending","requiresConfirm":true,"detail":"waiting"}],"status":"previewed","summary":"ready","parsedConfig":{"sourceType":"url","name":"example","description":"from url","transportType":"http","endpointOrCommand":"https://example.com/mcp"},"envReport":[],"createdAt":"2026-04-01T00:00:00Z","updatedAt":"2026-04-01T00:00:00Z","link":"https://example.com/mcp"}\n\n',
+      'event: ops_install_step_started\ndata: {"sessionId":"ops-session-1","step":{"id":"create_or_update_server","name":"create_or_update_server","title":"create","status":"running","requiresConfirm":true,"detail":"running..."}}\n\n',
+      'event: ops_install_step_finished\ndata: {"sessionId":"ops-session-1","step":{"id":"create_or_update_server","name":"create_or_update_server","title":"create","status":"passed","requiresConfirm":true,"detail":"ok"}}\n\n',
+      'event: ops_install_finished\ndata: {"sessionId":"ops-session-1","status":"previewed","summary":"ready"}\n\n',
+      'event: final_answer\ndata: {"messageId":"a-ops","content":"done"}\n\n',
+    ])
+    vi.stubGlobal('fetch', vi.fn(async () => response))
+
+    const { messageService } = await import('@/services/message.service')
+    const onOpsInstallPreview = vi.fn()
+    const onOpsInstallStepStarted = vi.fn()
+    const onOpsInstallStepFinished = vi.fn()
+    const onOpsInstallFinished = vi.fn()
+
+    await messageService.streamMessage(
+      'c-ops',
+      'install this mcp',
+      {
+        onOpsInstallPreview,
+        onOpsInstallStepStarted,
+        onOpsInstallStepFinished,
+        onOpsInstallFinished,
+      },
+      {},
+    )
+
+    expect(onOpsInstallPreview).toHaveBeenCalledTimes(1)
+    expect(onOpsInstallPreview).toHaveBeenCalledWith(expect.objectContaining({ id: 'ops-session-1' }))
+    expect(onOpsInstallStepStarted).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionId: 'ops-session-1',
+        step: expect.objectContaining({ id: 'create_or_update_server', status: 'running' }),
+      }),
+    )
+    expect(onOpsInstallStepFinished).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionId: 'ops-session-1',
+        step: expect.objectContaining({ id: 'create_or_update_server', status: 'passed' }),
+      }),
+    )
+    expect(onOpsInstallFinished).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionId: 'ops-session-1',
+        status: 'previewed',
+      }),
+    )
+  })
+
+  it('dispatches ops command SSE events to dedicated handlers', async () => {
+    const response = createSseResponse([
+      'event: ops_command_preview\ndata: {"id":"ops-cmd-1","status":"previewed","summary":"preview ready","preview":{"command":"npm run build","argv":["npm","run","build"],"cwd":"D:/Develop/vscode Workspace/Agent_live2d","riskLevel":"medium","requiresConfirm":true,"notes":["allowlisted executable"]},"createdAt":"2026-04-01T00:00:00Z","updatedAt":"2026-04-01T00:00:00Z"}\n\n',
+      'event: ops_command_finished\ndata: {"sessionId":"ops-cmd-1","status":"previewed","summary":"preview ready"}\n\n',
+      'event: final_answer\ndata: {"messageId":"a-cmd","content":"done"}\n\n',
+    ])
+    vi.stubGlobal('fetch', vi.fn(async () => response))
+
+    const { messageService } = await import('@/services/message.service')
+    const onOpsCommandPreview = vi.fn()
+    const onOpsCommandFinished = vi.fn()
+
+    await messageService.streamMessage(
+      'c-cmd',
+      'cmd: npm run build',
+      {
+        onOpsCommandPreview,
+        onOpsCommandFinished,
+      },
+      {},
+    )
+
+    expect(onOpsCommandPreview).toHaveBeenCalledTimes(1)
+    expect(onOpsCommandPreview).toHaveBeenCalledWith(expect.objectContaining({ id: 'ops-cmd-1' }))
+    expect(onOpsCommandFinished).toHaveBeenCalledWith(expect.objectContaining({
+      sessionId: 'ops-cmd-1',
+      status: 'previewed',
+    }))
+  })
+
   it('does not reuse previous event name for block without event field', async () => {
     const response = createSseResponse([
       'event: thinking\ndata: {"message":"stage-1"}\n\n',
@@ -137,7 +217,11 @@ describe('messageService.streamMessage', () => {
       'c-3',
       'hello',
       { onFinalAnswer },
-      { manualToolRequests, metadata: { requestId: 'req-stream-1' } },
+      {
+        manualToolRequests,
+        metadata: { requestId: 'req-stream-1' },
+        modelConfigId: 'model-override-1',
+      },
     )
 
     expect(fetchMock).toHaveBeenCalledTimes(1)
@@ -147,6 +231,7 @@ describe('messageService.streamMessage', () => {
     const parsedBody = JSON.parse(String(requestInit?.body))
     expect(parsedBody.manualToolRequests).toEqual(manualToolRequests)
     expect(parsedBody.metadata).toEqual(expect.objectContaining({ requestId: 'req-stream-1' }))
+    expect(parsedBody.modelConfigId).toBe('model-override-1')
     expect(onFinalAnswer).toHaveBeenCalledWith({
       messageId: 'a-2',
       content: 'done',
@@ -172,6 +257,80 @@ describe('messageService.streamMessage', () => {
     )
 
     expect(onStopped).toHaveBeenCalledTimes(1)
+  })
+
+  it('ignores non-json blocks and still handles later terminal event', async () => {
+    const response = createSseResponse([
+      'event: token\ndata: not-json-ping\n\n',
+      'event: token\ndata: {"content":"A"}\n\n',
+      'event: final_answer\ndata: {"messageId":"a-keepalive","content":"A"}\n\n',
+    ])
+    vi.stubGlobal('fetch', vi.fn(async () => response))
+
+    const { messageService } = await import('@/services/message.service')
+    const onToken = vi.fn()
+    const onFinalAnswer = vi.fn()
+
+    await messageService.streamMessage(
+      'c-keepalive',
+      'hello',
+      { onToken, onFinalAnswer },
+      {},
+    )
+
+    expect(onToken).toHaveBeenCalledWith('A')
+    expect(onFinalAnswer).toHaveBeenCalledWith(expect.objectContaining({
+      messageId: 'a-keepalive',
+      content: 'A',
+    }))
+  })
+
+  it('parses CRLF SSE blocks correctly', async () => {
+    const response = createSseResponse([
+      'event: token\r\ndata: {"content":"Hi"}\r\n\r\n',
+      'event: final_answer\r\ndata: {"messageId":"a-crlf","content":"Hi"}\r\n\r\n',
+    ])
+    vi.stubGlobal('fetch', vi.fn(async () => response))
+
+    const { messageService } = await import('@/services/message.service')
+    const onToken = vi.fn()
+    const onFinalAnswer = vi.fn()
+
+    await messageService.streamMessage(
+      'c-crlf',
+      'hello',
+      { onToken, onFinalAnswer },
+      {},
+    )
+
+    expect(onToken).toHaveBeenCalledWith('Hi')
+    expect(onFinalAnswer).toHaveBeenCalledWith(expect.objectContaining({
+      messageId: 'a-crlf',
+      content: 'Hi',
+    }))
+  })
+
+  it('forwards abort signal to stream fetch request', async () => {
+    const response = createSseResponse([
+      'event: stopped\ndata: {"conversationId":"c-signal"}\n\n',
+    ])
+    const fetchMock = vi.fn(async () => response)
+    vi.stubGlobal('fetch', fetchMock)
+
+    const { messageService } = await import('@/services/message.service')
+    const controller = new AbortController()
+
+    await messageService.streamMessage(
+      'c-signal',
+      'hello',
+      { onStopped: vi.fn() },
+      { signal: controller.signal },
+    )
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const calls = fetchMock.mock.calls as unknown[][]
+    const requestInit = calls[0]?.[1] as RequestInit | undefined
+    expect(requestInit?.signal).toBe(controller.signal)
   })
 
   it('uses parseApiError for non-ok stream response', async () => {
@@ -303,12 +462,20 @@ describe('messageService.sendMessage', () => {
       message: null,
     } as never)
 
-    await messageService.sendMessage('c-10', 'hello', [], [], { requestId: 'req-send-1' })
+    await messageService.sendMessage(
+      'c-10',
+      'hello',
+      [],
+      [],
+      { requestId: 'req-send-1' },
+      'model-override-2',
+    )
 
     expect(apiRequestMock).toHaveBeenCalledTimes(1)
     const [, options] = apiRequestMock.mock.calls[0] as [string, { body?: string }]
     const payload = JSON.parse(options.body || '{}')
     expect(payload.metadata).toEqual(expect.objectContaining({ requestId: 'req-send-1' }))
+    expect(payload.modelConfigId).toBe('model-override-2')
   })
 })
 

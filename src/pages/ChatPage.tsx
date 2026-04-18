@@ -1,11 +1,10 @@
-import { Suspense, lazy, useCallback, useEffect, useMemo, useState } from 'react'
+﻿import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import {
   Brain,
   Cable,
   CheckCircle2,
   ChevronDown,
-  ChevronUp,
   MessageSquareHeart,
   Plus,
   ScrollText,
@@ -18,10 +17,12 @@ import {
   memoryService,
   messageService,
   modelService,
+  opsCommandService,
+  opsMcpInstallerService,
   personaService,
   skillService,
 } from '@/services'
-import { useConversationStore, useNotificationStore } from '@/stores'
+import { useConversationStore, useFileAccessRequestStore, useNotificationStore } from '@/stores'
 import type {
   ChatLayoutMode,
   Conversation,
@@ -33,6 +34,10 @@ import type {
   ManualToolRequest,
   MCPServer,
   Message,
+  ModelConfig,
+  OpsCommandSession,
+  OpsMCPInstallSession,
+  OpsMCPInstallStep,
   Skill,
 } from '@/types'
 import { ChatInput } from '@/components/chat/ChatInput'
@@ -41,14 +46,24 @@ import { ChatModeToggle } from '@/components/chat/ChatModeToggle'
 import { Live2DStage } from '@/components/live2d/Live2DStage'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { Card, CardContent } from '@/components/ui/card'
 import { handleStreamFailure } from '@/pages/chat/streamFailureHandler'
 import { deriveToolUsage, normalizeToolLabel, type StreamToolResultMeta } from '@/pages/chat/toolUsage'
 import { canRegenerateFromMessages } from '@/pages/chat/regenerateState'
 import { mergeTransientTurnMessages } from '@/pages/chat/transientTurn'
+import {
+  clearRuntimeModelDraftForConversation,
+  getRuntimeModelDraftForConversation,
+  persistRuntimeModelDraftForConversation,
+} from '@/pages/chat/runtimeModelDraft'
 import { ApiRequestError } from '@/api/errors'
 import { parseManualToolBackendValidationIssues } from '@/components/chat/toolDraft'
 import { isMemoryVectorFallbackError } from '@/utils/memory-fallback'
+import { parseForbiddenPathViolation } from '@/utils'
+import {
+  CHAT_PAGE_COPY,
+  formatAutoToolCallingStatus,
+  formatManualToolCallingStatus,
+} from '@/constants/chat-copy'
 
 const ConversationSettingsDialog = lazy(async () => {
   const module = await import('@/components/chat/ConversationSettingsDialog')
@@ -210,10 +225,10 @@ function EmptyConversation() {
       </div>
       <div className="text-center">
         <h2 className="text-xl font-semibold text-(--color-foreground)/80">
-          选择一个会话开始聊天
+          {CHAT_PAGE_COPY.emptyConversationTitle}
         </h2>
         <p className="mt-2 text-sm">
-          从左侧列表打开已有会话，或者先创建一个新的对话。
+          {CHAT_PAGE_COPY.emptyConversationDescription}
         </p>
       </div>
     </div>
@@ -246,104 +261,6 @@ function dropTransientMessages(messages: Message[]) {
   return messages.filter(message => !message.metadata?.transient)
 }
 
-interface SessionOverviewProps {
-  personaName?: string
-  modelName?: string
-  skillCount: number
-  mcpCount: number
-  memoryCount: number
-  layoutMode: ChatLayoutMode
-  memoryFeedback: MemoryActionFeedback | null
-}
-
-function SessionOverview({
-  personaName,
-  modelName,
-  skillCount,
-  mcpCount,
-  memoryCount,
-  layoutMode,
-  memoryFeedback,
-}: SessionOverviewProps) {
-  const [open, setOpen] = useState(false)
-
-  return (
-    <Card className="mx-4 mt-2 border-(--color-border)/80 shadow-none">
-      <CardContent className="p-2">
-        <button
-          type="button"
-          className="flex w-full items-center justify-between rounded-md px-1.5 py-0.5 text-left transition-colors hover:bg-(--color-muted)/40"
-          onClick={() => setOpen(current => !current)}
-        >
-          <div className="min-w-0">
-            <div className="text-xs font-medium">会话概览</div>
-          </div>
-          <div className="ml-3 flex items-center gap-1 text-[11px] text-(--color-muted-foreground)">
-            <span>{open ? '收起详情' : '展开详情'}</span>
-            {open ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
-          </div>
-        </button>
-
-        {open && (
-          <div className="grid gap-3 px-1.5 pt-2 md:grid-cols-[1.3fr,1fr,1fr,1fr,1.2fr]">
-            <div className="min-w-0">
-              <div className="text-xs text-(--color-muted-foreground)">当前 Persona</div>
-              <div className="mt-1 truncate text-sm font-medium">{personaName || '未绑定 Persona'}</div>
-              <div className="mt-2 text-xs text-(--color-muted-foreground)">当前模型</div>
-              <div className="mt-1 truncate text-sm">{modelName || '未绑定模型'}</div>
-            </div>
-
-            <div>
-              <div className="text-xs text-(--color-muted-foreground)">Skill</div>
-              <div className="mt-1 flex items-center gap-2 text-sm font-medium">
-                <Sparkles className="h-4 w-4 text-(--color-primary)" />
-                {skillCount} 个已启用
-              </div>
-            </div>
-
-            <div>
-              <div className="text-xs text-(--color-muted-foreground)">MCP 服务</div>
-              <div className="mt-1 flex items-center gap-2 text-sm font-medium">
-                <Cable className="h-4 w-4 text-(--color-primary)" />
-                {mcpCount} 个已连接
-              </div>
-            </div>
-
-            <div>
-              <div className="text-xs text-(--color-muted-foreground)">会话模式</div>
-              <div className="mt-1 text-sm font-medium">{layoutMode === 'companion' ? '陪伴模式' : '聊天模式'}</div>
-              <div className="mt-2 text-xs text-(--color-muted-foreground)">关联记忆</div>
-              <div className="mt-1 flex items-center gap-2 text-sm font-medium">
-                <Brain className="h-4 w-4 text-(--color-primary)" />
-                {memoryCount} 条
-              </div>
-            </div>
-
-            <div className="rounded-xl border border-(--color-border) bg-(--color-muted)/30 px-3 py-2">
-              <div className="text-xs text-(--color-muted-foreground)">最近记忆动作</div>
-              {memoryFeedback ? (
-                <>
-                  <div className="mt-1 flex items-center gap-2 text-sm font-medium text-emerald-700">
-                    <CheckCircle2 className="h-4 w-4" />
-                    {memoryFeedback.title}
-                  </div>
-                  <div className="mt-1 line-clamp-3 text-xs leading-5 text-(--color-muted-foreground)">
-                    {memoryFeedback.description}
-                  </div>
-                </>
-              ) : (
-                <div className="mt-2 text-xs leading-5 text-(--color-muted-foreground)">
-                  还没有新的记忆动作。你可以在右侧面板或会话设置里生成摘要、写入长期记忆。
-                </div>
-              )}
-            </div>
-          </div>
-        )}
-      </CardContent>
-    </Card>
-  )
-}
-
 interface MemorySidePanelProps {
   memories: LongTermMemory[]
   feedback: MemoryActionFeedback | null
@@ -374,18 +291,18 @@ function MemorySidePanel({
       >
         <div className="flex items-center gap-2">
           <Brain className="h-4 w-4 text-(--color-primary)" />
-          <span className="text-sm font-medium">关联记忆</span>
+          <span className="text-sm font-medium">{CHAT_PAGE_COPY.memoryPanelTitle}</span>
           <Badge variant="outline">{memories.length} 条</Badge>
         </div>
         <div className="flex items-center gap-1 text-xs text-(--color-muted-foreground)">
-          <span>{open ? '收起' : '展开'}</span>
+          <span>{open ? CHAT_PAGE_COPY.collapse : CHAT_PAGE_COPY.expand}</span>
           {open ? <ChevronDown className="h-4 w-4 rotate-180" /> : <ChevronDown className="h-4 w-4" />}
         </div>
       </button>
 
       {!open && feedback && (
         <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/5 px-3 py-2 text-xs text-(--color-muted-foreground)">
-          最近动作：{feedback.title}
+          {CHAT_PAGE_COPY.recentActionPrefix}{feedback.title}
         </div>
       )}
 
@@ -401,28 +318,28 @@ function MemorySidePanel({
                 {feedback.description}
               </div>
               <div className="mt-1 text-[11px] text-(--color-muted-foreground)">
-                最近更新：{formatShortTime(feedback.at)}
+                {CHAT_PAGE_COPY.recentUpdatedPrefix}{formatShortTime(feedback.at)}
               </div>
             </div>
           )}
 
           <div className="mb-3 flex flex-col gap-2">
             <Button size="sm" variant="ghost" onClick={onOpenMemoryCenter}>
-              查看全部记忆
+              {CHAT_PAGE_COPY.viewAllMemories}
             </Button>
             <Button size="sm" variant="outline" onClick={onSummarize} disabled={isSummarizing}>
-              {isSummarizing ? '生成摘要中...' : '为当前会话生成摘要'}
+              {isSummarizing ? CHAT_PAGE_COPY.summarizeInProgress : CHAT_PAGE_COPY.summarizeNow}
             </Button>
             <Button size="sm" onClick={onRememberLatest} disabled={isSavingMemory}>
               <Plus className="mr-1 h-3.5 w-3.5" />
-              {isSavingMemory ? '写入记忆中...' : '记住最近一条用户消息'}
+              {isSavingMemory ? CHAT_PAGE_COPY.rememberInProgress : CHAT_PAGE_COPY.rememberLatestMessage}
             </Button>
           </div>
 
           {memories.length === 0 ? (
             <div className="rounded-xl border border-dashed border-(--color-border) px-3 py-6 text-center text-xs text-(--color-muted-foreground)">
               <ScrollText className="mx-auto mb-2 h-5 w-5 opacity-40" />
-              当前会话还没有可展示的长期记忆。
+              {CHAT_PAGE_COPY.memoryEmptyState}
             </div>
           ) : (
             <div className="space-y-3">
@@ -447,10 +364,119 @@ function MemorySidePanel({
   )
 }
 
+interface OpsInstallCardProps {
+  session: OpsMCPInstallSession
+  executingStepId: string | null
+  onExecuteStep: (step: OpsMCPInstallStep) => Promise<void>
+}
+
+function OpsInstallCard({ session, executingStepId, onExecuteStep }: OpsInstallCardProps) {
+  const executableSteps = session.steps.filter(step => step.requiresConfirm)
+
+  return (
+    <div className="border-b border-(--color-border) bg-(--color-card)/95 px-4 py-3 backdrop-blur-sm">
+      <div className="flex flex-wrap items-center gap-2">
+        <Badge variant="secondary">Ops MCP Installer</Badge>
+        <Badge variant="outline">{session.status}</Badge>
+        <span className="truncate text-xs text-(--color-muted-foreground)">
+          {session.parsedConfig.name} · {session.parsedConfig.transportType}
+        </span>
+      </div>
+      <div className="mt-1 text-xs text-(--color-muted-foreground)">
+        {session.summary || '已生成安装步骤，请逐步确认执行。'}
+      </div>
+      <div className="mt-2 grid gap-2">
+        {executableSteps.map((step) => {
+          const isRunning = step.status === 'running' || executingStepId === step.id
+          const canExecute = step.status === 'pending' || step.status === 'failed'
+          return (
+            <div
+              key={step.id}
+              className="flex items-center justify-between rounded-md border border-(--color-border) bg-(--color-background)/80 px-3 py-2"
+            >
+              <div className="min-w-0">
+                <div className="truncate text-xs font-medium">{step.title}</div>
+                <div className="truncate text-[11px] text-(--color-muted-foreground)">
+                  {step.detail || step.status}
+                </div>
+              </div>
+              <Button
+                size="sm"
+                variant={canExecute ? 'default' : 'outline'}
+                disabled={!canExecute || isRunning}
+                onClick={() => void onExecuteStep(step)}
+              >
+                {isRunning ? '执行中...' : canExecute ? '确认执行' : '已完成'}
+              </Button>
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+interface OpsCommandCardProps {
+  session: OpsCommandSession
+  executing: boolean
+  onExecute: () => Promise<void>
+}
+
+function OpsCommandCard({ session, executing, onExecute }: OpsCommandCardProps) {
+  const canExecute = session.status === 'previewed' || session.status === 'failed'
+  const result = session.result || null
+  const hasError = Boolean(result && result.exitCode !== 0)
+
+  return (
+    <div className="border-b border-(--color-border) bg-(--color-card)/95 px-4 py-3 backdrop-blur-sm">
+      <div className="flex flex-wrap items-center gap-2">
+        <Badge variant="secondary">Ops Command</Badge>
+        <Badge variant="outline">{session.status}</Badge>
+        <Badge variant="outline">risk: {session.preview.riskLevel}</Badge>
+      </div>
+      <div className="mt-1 text-xs text-(--color-muted-foreground)">
+        {session.summary || '已生成命令预览，请确认后执行。'}
+      </div>
+      <div className="mt-2 rounded-md border border-(--color-border) bg-(--color-background)/80 p-3 text-xs">
+        <div className="font-medium">命令</div>
+        <div className="mt-1 break-all text-(--color-muted-foreground)">{session.preview.command}</div>
+        <div className="mt-2 font-medium">工作目录</div>
+        <div className="mt-1 break-all text-(--color-muted-foreground)">{session.preview.cwd}</div>
+      </div>
+      {result && (
+        <div className="mt-2 rounded-md border border-(--color-border) bg-(--color-background)/80 p-3 text-xs">
+          <div className="flex items-center justify-between gap-2">
+            <span className="font-medium">执行结果</span>
+            <span className={hasError ? 'text-red-600' : 'text-emerald-600'}>
+              exit code: {result.exitCode}
+            </span>
+          </div>
+          {result.stderr && (
+            <div className="mt-2 line-clamp-4 whitespace-pre-wrap break-all text-red-600">
+              {result.stderr}
+            </div>
+          )}
+          {!result.stderr && result.stdout && (
+            <div className="mt-2 line-clamp-4 whitespace-pre-wrap break-all text-(--color-muted-foreground)">
+              {result.stdout}
+            </div>
+          )}
+        </div>
+      )}
+      <div className="mt-2 flex justify-end">
+        <Button size="sm" disabled={!canExecute || executing} onClick={() => void onExecute()}>
+          {executing ? '执行中...' : canExecute ? '确认执行' : '已执行'}
+        </Button>
+      </div>
+    </div>
+  )
+}
+
 export function ChatPage() {
   const { conversationId } = useParams<{ conversationId: string }>()
   const navigate = useNavigate()
   const pushNotification = useNotificationStore((state) => state.push)
+  const requestFileAccess = useFileAccessRequestStore((state) => state.requestAccess)
   const {
     messages,
     isLoadingMessages,
@@ -470,6 +496,8 @@ export function ChatPage() {
   const [personaOpeningMessage, setPersonaOpeningMessage] = useState<string>()
   const [personaLive2dModel, setPersonaLive2dModel] = useState<string>()
   const [modelName, setModelName] = useState<string>()
+  const [availableModels, setAvailableModels] = useState<ModelConfig[]>([])
+  const [selectedRuntimeModelId, setSelectedRuntimeModelId] = useState<string>()
   const [skills, setSkills] = useState<Skill[]>([])
   const [mcpServers, setMcpServers] = useState<MCPServer[]>([])
   const [relatedMemories, setRelatedMemories] = useState<LongTermMemory[]>([])
@@ -480,10 +508,47 @@ export function ChatPage() {
   const [memoryFeedback, setMemoryFeedback] = useState<MemoryActionFeedback | null>(null)
   const [backendToolValidationMessage, setBackendToolValidationMessage] = useState<string | null>(null)
   const [live2dState, setLive2dState] = useState<Live2DState>('idle')
+  const [streamStatusText, setStreamStatusText] = useState<string | null>(null)
   const [toolExecutionStates, setToolExecutionStates] = useState<ManualToolExecutionState[]>([])
+  const [opsInstallSession, setOpsInstallSession] = useState<OpsMCPInstallSession | null>(null)
+  const [opsExecutingStepId, setOpsExecutingStepId] = useState<string | null>(null)
+  const [opsCommandSession, setOpsCommandSession] = useState<OpsCommandSession | null>(null)
+  const [opsCommandExecuting, setOpsCommandExecuting] = useState(false)
+  const streamStatusTimerRef = useRef<number | null>(null)
 
   const notifyConversationMetaUpdated = useCallback(() => {
     window.dispatchEvent(new CustomEvent(CONVERSATION_META_UPDATED_EVENT))
+  }, [])
+
+  const clearEphemeralStreamStatus = useCallback(() => {
+    if (streamStatusTimerRef.current !== null) {
+      window.clearTimeout(streamStatusTimerRef.current)
+      streamStatusTimerRef.current = null
+    }
+    setStreamStatusText(null)
+  }, [])
+
+  const setEphemeralStreamStatus = useCallback((text: string, ttlMs = 2200) => {
+    const normalizedText = text.trim()
+    if (!normalizedText) return
+
+    if (streamStatusTimerRef.current !== null) {
+      window.clearTimeout(streamStatusTimerRef.current)
+      streamStatusTimerRef.current = null
+    }
+
+    setStreamStatusText(normalizedText)
+    streamStatusTimerRef.current = window.setTimeout(() => {
+      streamStatusTimerRef.current = null
+      setStreamStatusText(null)
+    }, ttlMs)
+  }, [])
+
+  useEffect(() => () => {
+    if (streamStatusTimerRef.current !== null) {
+      window.clearTimeout(streamStatusTimerRef.current)
+      streamStatusTimerRef.current = null
+    }
   }, [])
 
   const loadConversation = useCallback(async (currentConversationId: string) => {
@@ -498,21 +563,36 @@ export function ChatPage() {
       setConversations(conversationItems)
       setConversation(conv)
       setLayoutMode(conv.layoutMode)
+      setOpsInstallSession(null)
+      setOpsExecutingStepId(null)
+      setOpsCommandSession(null)
+      setOpsCommandExecuting(false)
 
-      const [msgs, persona, model, allSkills, allMcpServers, allMemories] = await Promise.all([
+      const [msgs, persona, allModels, allSkills, allMcpServers, allMemories] = await Promise.all([
         messageService.getMessages(currentConversationId),
         personaService.getPersona(conv.personaId),
-        modelService.getModelConfig(conv.modelConfigId),
+        modelService.getModelConfigs(),
         skillService.getSkills(),
         mcpService.getMcpServers(),
         memoryService.listLongTermMemories(),
       ])
 
+      const defaultModel = allModels.find(model => model.id === conv.modelConfigId)
+      const persistedRuntimeModelId = getRuntimeModelDraftForConversation(conv.id)
+      const hasPersistedRuntimeModel = Boolean(
+        persistedRuntimeModelId && allModels.some(model => model.id === persistedRuntimeModelId),
+      )
+      const effectiveRuntimeModelId = hasPersistedRuntimeModel && persistedRuntimeModelId
+        ? persistedRuntimeModelId
+        : conv.modelConfigId
+
       setMessages(msgs)
       setPersonaName(persona?.name)
       setPersonaOpeningMessage(persona?.openingMessage)
       setPersonaLive2dModel(persona?.live2dModel)
-      setModelName(model?.name)
+      setModelName(defaultModel?.name)
+      setAvailableModels(allModels)
+      setSelectedRuntimeModelId(effectiveRuntimeModelId)
       setSkills(allSkills.filter(skill => conv.enabledSkillIds.includes(skill.id)))
       setMcpServers(allMcpServers.filter(server => conv.enabledMcpServerIds.includes(server.id)))
       setRelatedMemories(
@@ -521,11 +601,20 @@ export function ChatPage() {
           || (memory.personaId && memory.personaId === conv.personaId),
         ),
       )
+
+      if (persistedRuntimeModelId && !hasPersistedRuntimeModel) {
+        clearRuntimeModelDraftForConversation(conv.id)
+        pushNotification({
+          type: 'info',
+          title: '会话模型已回退到默认配置',
+          description: '你上次选择的模型已不存在，已自动回退到当前会话默认模型。',
+        })
+      }
     }
     catch (error) {
       pushNotification({
         type: 'error',
-        title: '加载会话失败',
+        title: CHAT_PAGE_COPY.loadConversationFailed,
         description: error instanceof Error ? error.message : '请稍后再试。',
       })
     }
@@ -546,10 +635,16 @@ export function ChatPage() {
       setPersonaOpeningMessage(undefined)
       setPersonaLive2dModel(undefined)
       setModelName(undefined)
+      setAvailableModels([])
+      setSelectedRuntimeModelId(undefined)
       setMemoryFeedback(null)
       setBackendToolValidationMessage(null)
       setLive2dState('idle')
       setToolExecutionStates([])
+      setOpsInstallSession(null)
+      setOpsExecutingStepId(null)
+      setOpsCommandSession(null)
+      setOpsCommandExecuting(false)
       return
     }
 
@@ -560,6 +655,89 @@ export function ChatPage() {
   const skillNames = useMemo(() => skills.map(skill => skill.name), [skills])
   const mcpNames = useMemo(() => mcpServers.map(server => server.name), [mcpServers])
   const recentToolFailures = useMemo(() => deriveRecentToolFailures(messages), [messages])
+  const runtimeModelOptions = useMemo(
+    () => availableModels.map(model => ({ id: model.id, name: model.name })),
+    [availableModels],
+  )
+  const selectedRuntimeModelName = useMemo(() => {
+    if (!selectedRuntimeModelId) return undefined
+    return availableModels.find(model => model.id === selectedRuntimeModelId)?.name
+  }, [availableModels, selectedRuntimeModelId])
+
+  const handleRuntimeModelChange = useCallback((nextModelConfigId: string) => {
+    setSelectedRuntimeModelId(nextModelConfigId)
+    if (!conversationId) return
+    persistRuntimeModelDraftForConversation(conversationId, nextModelConfigId)
+  }, [conversationId])
+
+  const handleExecuteOpsInstallStep = useCallback(async (step: OpsMCPInstallStep) => {
+    if (!opsInstallSession) return
+    try {
+      setOpsExecutingStepId(step.id)
+      const result = await opsMcpInstallerService.executeInstallStep({
+        sessionId: opsInstallSession.id,
+        stepId: step.id,
+      })
+      setOpsInstallSession(result.session)
+      pushNotification({
+        type: result.step.status === 'passed' ? 'success' : 'error',
+        title: result.step.status === 'passed' ? '安装步骤执行成功' : '安装步骤执行失败',
+        description: result.step.detail || result.session.summary || '',
+      })
+      if (result.session.status === 'completed' && conversationId) {
+        await loadConversation(conversationId)
+      }
+    }
+    catch (error) {
+      pushNotification({
+        type: 'error',
+        title: '安装步骤执行失败',
+        description: error instanceof Error ? error.message : '请稍后重试。',
+      })
+    }
+    finally {
+      setOpsExecutingStepId(null)
+    }
+  }, [conversationId, loadConversation, opsInstallSession, pushNotification])
+
+  const executeOpsCommandSession = useCallback(async (
+    session: OpsCommandSession,
+    source: 'manual' | 'auto',
+  ) => {
+    try {
+      setOpsCommandExecuting(true)
+      const result = await opsCommandService.executeCommand({
+        sessionId: session.id,
+      })
+      setOpsCommandSession(result.session)
+      const exitCode = result.session.result?.exitCode
+      const hasError = typeof exitCode === 'number' && exitCode !== 0
+      pushNotification({
+        type: hasError ? 'error' : 'success',
+        title: hasError
+          ? (source === 'auto' ? '自动执行完成（存在错误）' : '命令执行完成（存在错误）')
+          : (source === 'auto' ? '已自动执行命令' : '命令执行成功'),
+        description: typeof exitCode === 'number'
+          ? `exit code: ${exitCode}`
+          : (result.session.summary || '请查看命令执行结果。'),
+      })
+    }
+    catch (error) {
+      pushNotification({
+        type: 'error',
+        title: '命令执行失败',
+        description: error instanceof Error ? error.message : '请稍后重试。',
+      })
+    }
+    finally {
+      setOpsCommandExecuting(false)
+    }
+  }, [pushNotification])
+
+  const handleExecuteOpsCommand = useCallback(async () => {
+    if (!opsCommandSession) return
+    await executeOpsCommandSession(opsCommandSession, 'manual')
+  }, [executeOpsCommandSession, opsCommandSession])
 
   const runStreamingTurn = useCallback(async (
     content: string,
@@ -567,6 +745,7 @@ export function ChatPage() {
       metadata?: Record<string, unknown>
       manualToolRequests?: ManualToolRequest[]
       mode?: 'send' | 'regenerate'
+      modelConfigId?: string
     },
   ) => {
     if (!conversationId || isSending) return
@@ -582,10 +761,9 @@ export function ChatPage() {
     }
     const userId = `temp-user-${nonce}`
     const assistantId = `temp-assistant-${nonce}`
-    const thinkingId = `temp-thinking-${nonce}`
-    const memoryId = `temp-memory-${nonce}`
     const streamToolResults: StreamToolResultMeta[] = []
     const manualRequests = options?.manualToolRequests || []
+    const runtimeModelConfigId = options?.modelConfigId
     let streamAcceptedByServer = false
 
     if (manualRequests.length > 0) {
@@ -595,7 +773,7 @@ export function ChatPage() {
           targetId: request.targetId,
           label: request.label,
           status: 'queued',
-          detail: '等待执行',
+          detail: CHAT_PAGE_COPY.executionQueued,
           updatedAt: new Date().toISOString(),
         })),
       )
@@ -627,7 +805,18 @@ export function ChatPage() {
       senderName: personaName || '助手',
       attachments: [],
       createdAt: new Date().toISOString(),
-      metadata: { transient: true, mode: options?.mode || 'send' },
+      metadata: {
+        transient: true,
+        mode: options?.mode || 'send',
+        manualToolRequests: manualRequests,
+        toolUsage: manualRequests.length > 0
+          ? {
+              manualCount: manualRequests.length,
+              automaticCount: 0,
+              totalCount: manualRequests.length,
+            }
+          : undefined,
+      },
     }
 
     const currentMessages = useConversationStore.getState().messages
@@ -636,11 +825,11 @@ export function ChatPage() {
         currentMessages,
         [
           tempUserMessage,
-          createTransientMessage(conversationId, thinkingId, 'system', '正在分析你的问题...'),
           tempAssistantMessage,
         ],
       ),
     )
+    setEphemeralStreamStatus('Analyzing request and planning execution...')
 
     try {
       await messageService.streamMessage(
@@ -651,24 +840,20 @@ export function ChatPage() {
             streamAcceptedByServer = true
           },
           onThinking: (payload) => {
-            updateMessage(thinkingId, {
-              content: payload.message || '正在分析你的问题...',
-            })
+            setEphemeralStreamStatus(payload.message || 'Analyzing request and planning execution...')
           },
           onToolCalling: (payload) => {
             const fallbackMessage = payload.manual
-              ? `正在按你的指定调用 ${payload.manualCount || payload.toolCount || 0} 个工具...`
-              : `正在自动调用 ${payload.autoCount || payload.toolCount || 0} 个工具能力...`
-            updateMessage(thinkingId, {
-              content: payload.message || fallbackMessage,
-            })
+              ? formatManualToolCallingStatus(payload.manualCount || payload.toolCount || 0)
+              : formatAutoToolCallingStatus(payload.autoCount || payload.toolCount || 0)
+            setEphemeralStreamStatus(payload.message || fallbackMessage)
             if (payload.manual) {
               setToolExecutionStates(current => current.map((item) => {
                 if (item.status !== 'queued') return item
                 return {
                   ...item,
                   status: 'running',
-                  detail: '执行中',
+                  detail: CHAT_PAGE_COPY.executionRunning,
                   updatedAt: new Date().toISOString(),
                 }
               }))
@@ -686,8 +871,27 @@ export function ChatPage() {
               inputText: payload.inputText,
               inputParams: payload.inputParams,
               error: payload.error,
+              code: payload.code,
+              details: payload.details,
               toolName: payload.toolName,
               executionMode: payload.executionMode,
+            })
+            const currentAssistant = useConversationStore
+              .getState()
+              .messages
+              .find(message => message.id === assistantId)
+            const currentAssistantMetadata = (
+              currentAssistant?.metadata && typeof currentAssistant.metadata === 'object'
+            )
+              ? currentAssistant.metadata
+              : {}
+            updateMessage(assistantId, {
+              metadata: {
+                ...currentAssistantMetadata,
+                toolResults: [...streamToolResults],
+                toolUsage: deriveToolUsage(streamToolResults),
+                manualToolRequests: manualRequests,
+              },
             })
             if (payload.manual) {
               const payloadLabel = normalizeToolLabel(payload.label || payload.name || payload.title)
@@ -701,10 +905,22 @@ export function ChatPage() {
                 return {
                   ...item,
                   status: payload.error ? 'error' : 'success',
-                  detail: payload.error ? (payload.summary || payload.error || '执行失败') : (payload.summary || '执行完成'),
+                  detail: payload.error
+                    ? (payload.summary || (typeof payload.error === 'string' ? payload.error : CHAT_PAGE_COPY.executionFailed))
+                    : (payload.summary || CHAT_PAGE_COPY.executionSuccess),
                   updatedAt: new Date().toISOString(),
                 }
               }))
+            }
+            if (payload.error) {
+              const forbiddenPath = parseForbiddenPathViolation(payload)
+                || parseForbiddenPathViolation(payload.result || payload.summary || '')
+              if (forbiddenPath) {
+                requestFileAccess({
+                  ...forbiddenPath,
+                  source: 'mcp',
+                })
+              }
             }
             const toolMessageId = `temp-tool-${nonce}-${payload.type}-${payload.name}`
             const existing = useConversationStore.getState().messages.find(message => message.id === toolMessageId)
@@ -717,6 +933,8 @@ export function ChatPage() {
                   title: payload.title,
                   summary: payload.summary,
                   error: payload.error,
+                  code: payload.code,
+                  details: payload.details,
                   toolName: payload.toolName,
                   executionMode: payload.executionMode,
                   inputText: payload.inputText,
@@ -736,8 +954,8 @@ export function ChatPage() {
                   toolName: payload.name,
                   toolStatus: payload.error ? 'error' : 'success',
                   senderName: payload.manual
-                    ? (payload.type === 'mcp' ? '手动调用 MCP 服务' : '手动调用 Skill')
-                    : (payload.type === 'mcp' ? '自动调用 MCP 服务' : '自动调用 Skill'),
+                    ? (payload.type === 'mcp' ? CHAT_PAGE_COPY.manualMcpSender : CHAT_PAGE_COPY.manualSkillSender)
+                    : (payload.type === 'mcp' ? CHAT_PAGE_COPY.autoMcpSender : CHAT_PAGE_COPY.autoSkillSender),
                   metadata: {
                     transient: true,
                     toolType: payload.type,
@@ -746,6 +964,8 @@ export function ChatPage() {
                     title: payload.title,
                     summary: payload.summary,
                     error: payload.error,
+                    code: payload.code,
+                    details: payload.details,
                     toolName: payload.toolName,
                     executionMode: payload.executionMode,
                     inputText: payload.inputText,
@@ -756,20 +976,68 @@ export function ChatPage() {
             )
           },
           onMemorySync: (payload) => {
-            const existing = useConversationStore.getState().messages.find(message => message.id === memoryId)
-            if (existing) {
-              updateMessage(memoryId, { content: payload.message || '正在整理阶段记忆...' })
-              return
+            setEphemeralStreamStatus(payload.message || 'Syncing conversation memory...', 2600)
+          },
+          onOpsInstallPreview: (session) => {
+            setOpsInstallSession(session)
+            pushNotification({
+              type: 'info',
+              title: '检测到 MCP 安装请求',
+              description: `已生成安装步骤：${session.parsedConfig.name}`,
+            })
+          },
+          onOpsInstallStepStarted: ({ sessionId, step }) => {
+            setOpsInstallSession((current) => {
+              if (!current || current.id !== sessionId) return current
+              return {
+                ...current,
+                steps: current.steps.map((item) => (item.id === step.id ? step : item)),
+              }
+            })
+          },
+          onOpsInstallStepFinished: ({ sessionId, step }) => {
+            setOpsInstallSession((current) => {
+              if (!current || current.id !== sessionId) return current
+              return {
+                ...current,
+                steps: current.steps.map((item) => (item.id === step.id ? step : item)),
+              }
+            })
+          },
+          onOpsInstallFinished: ({ sessionId, status, summary }) => {
+            setOpsInstallSession((current) => {
+              if (!current || current.id !== sessionId) return current
+              return {
+                ...current,
+                ...(status ? { status } : {}),
+                ...(summary ? { summary } : {}),
+              }
+            })
+          },
+          onOpsCommandPreview: (session) => {
+            setOpsCommandSession(session)
+            const riskLevel = String(session.preview.riskLevel || '').toLowerCase()
+            const shouldAutoExecute = riskLevel !== 'high'
+            pushNotification({
+              type: 'info',
+              title: '检测到命令执行请求',
+              description: shouldAutoExecute
+                ? `已自动执行命令：${session.preview.command}`
+                : `已生成高风险命令预览，请确认后执行：${session.preview.command}`,
+            })
+            if (shouldAutoExecute) {
+              void executeOpsCommandSession(session, 'auto')
             }
-
-            addMessage(
-              createTransientMessage(
-                conversationId,
-                memoryId,
-                'system',
-                payload.message || '正在整理阶段记忆...',
-              ),
-            )
+          },
+          onOpsCommandFinished: ({ sessionId, status, summary }) => {
+            setOpsCommandSession((current) => {
+              if (!current || current.id !== sessionId) return current
+              return {
+                ...current,
+                ...(status ? { status } : {}),
+                ...(summary ? { summary } : {}),
+              }
+            })
           },
           onLive2dStateChange: (state) => {
             setLive2dState(state)
@@ -786,6 +1054,7 @@ export function ChatPage() {
             })
           },
           onFinalAnswer: async (payload) => {
+            clearEphemeralStreamStatus()
             const fallbackUsage = deriveToolUsage(streamToolResults)
             const toolUsage = payload.toolUsage || fallbackUsage
             const manualToolRequests = payload.manualToolRequests || options?.manualToolRequests || []
@@ -795,7 +1064,7 @@ export function ChatPage() {
                 return {
                   ...item,
                   status: 'success',
-                  detail: '执行完成',
+                  detail: CHAT_PAGE_COPY.executionSuccess,
                   updatedAt: new Date().toISOString(),
                 }
               }))
@@ -820,12 +1089,13 @@ export function ChatPage() {
               console.error('final-answer refresh failed:', refreshError)
               pushNotification({
                 type: 'info',
-                title: '回复已生成，列表刷新失败',
+                title: '回复已生成，但列表刷新失败',
                 description: '你可以继续对话，或稍后手动刷新会话列表。',
               })
             }
           },
           onStopped: () => {
+            clearEphemeralStreamStatus()
             setToolExecutionStates(current => current.map((item) => {
               if (item.status !== 'queued' && item.status !== 'running') return item
               return {
@@ -846,17 +1116,19 @@ export function ChatPage() {
         {
           metadata: streamMetadata,
           manualToolRequests: options?.manualToolRequests,
+          modelConfigId: runtimeModelConfigId,
         },
       )
     }
     catch (streamError) {
+      clearEphemeralStreamStatus()
       setLive2dState('error')
       setToolExecutionStates(current => current.map((item) => {
         if (item.status !== 'queued' && item.status !== 'running') return item
         return {
           ...item,
           status: 'error',
-          detail: '执行失败',
+          detail: CHAT_PAGE_COPY.executionFailed,
           updatedAt: new Date().toISOString(),
         }
       }))
@@ -879,9 +1151,16 @@ export function ChatPage() {
           undefined,
           manualToolRequests,
           streamMetadata,
+          runtimeModelConfigId,
         ),
         updateMessage,
         pushNotification,
+        onForbiddenPath: (forbiddenPath) => {
+          requestFileAccess({
+            ...forbiddenPath,
+            source: 'mcp',
+          })
+        },
         fallbackMetadata: streamMetadata,
         onLoadConversationError: (error) => {
           if (import.meta.env.DEV) {
@@ -890,13 +1169,20 @@ export function ChatPage() {
         },
       })
       if (failureOutcome === 'fallback-failed') {
+        const forbiddenPath = parseForbiddenPathViolation(streamError)
+        if (forbiddenPath) {
+          requestFileAccess({
+            ...forbiddenPath,
+            source: 'mcp',
+          })
+        }
         if (isExpectedUserInputError(streamError)) {
           const manualValidationMessage = extractManualToolValidationMessage(streamError)
           if (manualValidationMessage) {
             setBackendToolValidationMessage(manualValidationMessage)
           }
           if (import.meta.env.DEV) {
-            console.info('流式发送失败（输入校验类）：', streamError)
+            console.info('流式发送失败（输入校验类）:', streamError)
           }
         }
         else {
@@ -905,6 +1191,7 @@ export function ChatPage() {
       }
     }
     finally {
+      clearEphemeralStreamStatus()
       setIsSending(false)
       setLive2dState((current) => {
         if (current === 'error') {
@@ -914,7 +1201,20 @@ export function ChatPage() {
         return 'idle'
       })
     }
-  }, [addMessage, conversationId, isSending, loadConversation, personaName, pushNotification, setIsSending, setMessages, updateMessage])
+  }, [
+    addMessage,
+    clearEphemeralStreamStatus,
+    conversationId,
+    isSending,
+    loadConversation,
+    personaName,
+    pushNotification,
+    setEphemeralStreamStatus,
+    setIsSending,
+    setMessages,
+    updateMessage,
+    requestFileAccess,
+  ])
 
   const handleSend = useCallback(async (
     content: string,
@@ -923,8 +1223,9 @@ export function ChatPage() {
     await runStreamingTurn(content, {
       mode: 'send',
       manualToolRequests: options?.manualToolRequests,
+      modelConfigId: selectedRuntimeModelId || conversation?.modelConfigId,
     })
-  }, [runStreamingTurn])
+  }, [conversation?.modelConfigId, runStreamingTurn, selectedRuntimeModelId])
 
   const handleStop = useCallback(async () => {
     if (!conversationId) return
@@ -1029,7 +1330,7 @@ export function ChatPage() {
       }
       pushNotification({
         type: 'error',
-        title: '生成摘要失败',
+        title: CHAT_PAGE_COPY.summarizeFailed,
         description: error instanceof Error ? error.message : '请稍后再试。',
       })
     }
@@ -1089,7 +1390,7 @@ export function ChatPage() {
       }
       pushNotification({
         type: 'error',
-        title: '写入长期记忆失败',
+        title: CHAT_PAGE_COPY.rememberFailed,
         description: error instanceof Error ? error.message : '请稍后再试。',
       })
     }
@@ -1215,16 +1516,6 @@ export function ChatPage() {
           </div>
         </div>
 
-        <SessionOverview
-          personaName={personaName}
-          modelName={modelName}
-          skillCount={conversation?.enabledSkillIds.length || 0}
-          mcpCount={conversation?.enabledMcpServerIds.length || 0}
-          memoryCount={relatedMemories.length}
-          layoutMode={layoutMode}
-          memoryFeedback={memoryFeedback}
-        />
-
         <div className="min-h-0 flex-1">
           <ChatLayout
             layoutMode={layoutMode}
@@ -1252,28 +1543,48 @@ export function ChatPage() {
               />
             )}
             inputSlot={(
-              <ChatInput
-                conversationId={conversationId}
-                conversationTitle={conversation?.title}
-                onSend={handleSend}
-                onStop={handleStop}
-                onRegenerate={showRegenerate ? handleRegenerate : undefined}
-                onClearContext={handleClearContext}
-                isSending={isSending}
-                personaName={personaName}
-                modelName={modelName}
-                skillCount={conversation?.enabledSkillIds.length}
-                mcpCount={conversation?.enabledMcpServerIds.length}
-                enabledSkills={skills}
-                enabledMcpServers={mcpServers}
-                toolExecutionStates={toolExecutionStates}
-                recentToolFailures={recentToolFailures}
-                backendValidationMessage={backendToolValidationMessage}
-                onOpenConversationSettings={handleOpenToolRepairConversationSettings}
-                onOpenMcpCenter={handleOpenToolRepairMcpCenter}
-                isContextLoading={isLoadingMessages}
-                placeholder={personaOpeningMessage || '输入消息...'}
-              />
+              <>
+                {opsInstallSession && (
+                  <OpsInstallCard
+                    session={opsInstallSession}
+                    executingStepId={opsExecutingStepId}
+                    onExecuteStep={handleExecuteOpsInstallStep}
+                  />
+                )}
+                {opsCommandSession && (
+                  <OpsCommandCard
+                    session={opsCommandSession}
+                    executing={opsCommandExecuting}
+                    onExecute={handleExecuteOpsCommand}
+                  />
+                )}
+                <ChatInput
+                  conversationId={conversationId}
+                  conversationTitle={conversation?.title}
+                  onSend={handleSend}
+                  onStop={handleStop}
+                  onRegenerate={showRegenerate ? handleRegenerate : undefined}
+                  onClearContext={handleClearContext}
+                  isSending={isSending}
+                  personaName={personaName}
+                  modelName={selectedRuntimeModelName || modelName}
+                  skillCount={conversation?.enabledSkillIds.length}
+                  mcpCount={conversation?.enabledMcpServerIds.length}
+                  enabledSkills={skills}
+                  enabledMcpServers={mcpServers}
+                  runtimeModelOptions={runtimeModelOptions}
+                  selectedRuntimeModelId={selectedRuntimeModelId}
+                  onRuntimeModelChange={handleRuntimeModelChange}
+                  toolExecutionStates={toolExecutionStates}
+                  recentToolFailures={recentToolFailures}
+                  backendValidationMessage={backendToolValidationMessage}
+                  onOpenConversationSettings={handleOpenToolRepairConversationSettings}
+                  onOpenMcpCenter={handleOpenToolRepairMcpCenter}
+                  isContextLoading={isLoadingMessages}
+                  streamStatusText={streamStatusText}
+                  placeholder={personaOpeningMessage || '输入消息...'}
+                />
+              </>
             )}
           />
         </div>
@@ -1303,6 +1614,7 @@ export function ChatPage() {
     </>
   )
 }
+
 
 
 

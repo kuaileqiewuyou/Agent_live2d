@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, type KeyboardEvent, useState } from 'react'
+﻿import { useCallback, useEffect, useMemo, useRef, type KeyboardEvent, useState } from 'react'
 import {
   AlertTriangle,
   Bot,
@@ -15,8 +15,15 @@ import {
   Zap,
 } from 'lucide-react'
 import type { MCPServer, ManualToolExecutionState, ManualToolFailureHint, ManualToolRequest, Skill } from '@/types'
-import { cn } from '@/utils'
+import { cn, createSurfaceTintColor } from '@/utils'
 import { Button } from '@/components/ui/button'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import { ChatToolPanel } from '@/components/chat/ChatToolPanel'
 import {
   buildManualToolBackendValidationHint,
@@ -38,11 +45,16 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from '@/components/ui/tooltip'
-import { useNotificationStore } from '@/stores'
+import { useChatAppearanceStore, useNotificationStore } from '@/stores'
 import { useBackendHealth } from '@/hooks'
 
 interface SendOptions {
   manualToolRequests?: ManualToolRequest[]
+}
+
+interface RuntimeModelOption {
+  id: string
+  name: string
 }
 
 interface ChatInputProps {
@@ -65,7 +77,11 @@ interface ChatInputProps {
   onOpenConversationSettings?: () => void
   onOpenMcpCenter?: () => void
   isContextLoading?: boolean
+  streamStatusText?: string | null
   placeholder?: string
+  runtimeModelOptions?: RuntimeModelOption[]
+  selectedRuntimeModelId?: string
+  onRuntimeModelChange?: (modelConfigId: string) => void
 }
 
 export function ChatInput({
@@ -88,8 +104,13 @@ export function ChatInput({
   onOpenConversationSettings,
   onOpenMcpCenter,
   isContextLoading = false,
+  streamStatusText = null,
   placeholder = '输入消息...',
+  runtimeModelOptions = [],
+  selectedRuntimeModelId,
+  onRuntimeModelChange,
 }: ChatInputProps) {
+
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const pushNotification = useNotificationStore((state) => state.push)
   const {
@@ -99,6 +120,7 @@ export function ChatInput({
     lastCheckedAt,
     retry: retryBackendHealth,
   } = useBackendHealth()
+  const inputOpacity = useChatAppearanceStore((state) => state.inputOpacity)
   const [toolPanelOpen, setToolPanelOpen] = useState(false)
   const [selectedRequests, setSelectedRequests] = useState<ManualToolRequest[]>([])
   const [composerText, setComposerText] = useState('')
@@ -251,7 +273,7 @@ export function ChatInput({
 
     return {
       tone: 'ok' as const,
-      text: 'Tool 参数已通过校验，可直接发送（消息留空时会自动生成兜底指令）',
+      text: 'Tool 参数已通过校验，可直接发送（消息留空时会自动生成兜底指令）。',
     }
   }, [requestsWithInvalidTyped.length, requestsWithMissingRequired.length, selectedRequests.length])
 
@@ -269,6 +291,20 @@ export function ChatInput({
     })
   }, [lastCheckedAt])
 
+  const inputContainerStyle = useMemo(
+    () => ({
+      backgroundColor: createSurfaceTintColor('--color-background', inputOpacity),
+    }),
+    [inputOpacity],
+  )
+
+  const textareaSurfaceStyle = useMemo(
+    () => ({
+      backgroundColor: createSurfaceTintColor('--color-card', inputOpacity),
+    }),
+    [inputOpacity],
+  )
+
   const handleSend = useCallback((overrides?: {
     content?: string
     manualToolRequests?: ManualToolRequest[]
@@ -277,7 +313,7 @@ export function ChatInput({
       pushNotification({
         type: 'error',
         title: '后端暂不可达',
-        description: '消息发送已暂停，请先点击“重试连接”恢复后端连接。',
+        description: '消息发送已暂停，请先点击重试连接恢复后端连接。',
       })
       return
     }
@@ -344,7 +380,10 @@ export function ChatInput({
   }, [handleSend])
 
   return (
-    <div className="border-t border-(--color-border) bg-(--color-background)">
+    <div
+      className="border-t border-(--color-border) bg-(--color-background)/80 backdrop-blur-sm"
+      style={inputContainerStyle}
+    >
       <div className="flex items-center gap-3 border-b border-(--color-border)/50 px-4 py-1.5 text-xs text-(--color-muted-foreground)">
         {personaName && (
           <span className="flex items-center gap-1">
@@ -419,13 +458,13 @@ export function ChatInput({
                   variant="ghost"
                   size="icon"
                   className="h-8 w-8 text-(--color-muted-foreground)"
-                  aria-label="附件能力预留"
+                  aria-label="附件（暂未开放）"
                 >
                   <Paperclip className="h-4 w-4" />
                 </Button>
               </TooltipTrigger>
               <TooltipContent>
-                <p>附件能力预留</p>
+                <p>附件（暂未开放）</p>
               </TooltipContent>
             </Tooltip>
           </TooltipProvider>
@@ -437,20 +476,42 @@ export function ChatInput({
                   variant="ghost"
                   size="icon"
                   className="h-8 w-8 text-(--color-muted-foreground)"
-                  aria-label="清空当前界面消息"
+                  aria-label="清空当前上下文"
                   onClick={onClearContext}
                 >
                   <Trash2 className="h-4 w-4" />
                 </Button>
               </TooltipTrigger>
               <TooltipContent>
-                <p>清空当前界面消息</p>
+                <p>清空当前上下文</p>
               </TooltipContent>
             </Tooltip>
           </TooltipProvider>
         </div>
 
         <div className="relative flex-1">
+          {runtimeModelOptions.length > 0 && (
+            <div className="mb-2 flex items-center gap-2 px-1">
+              <span className="shrink-0 text-xs text-(--color-muted-foreground)">本条模型</span>
+              <Select
+                value={selectedRuntimeModelId}
+                onValueChange={onRuntimeModelChange}
+                disabled={isSending || !onRuntimeModelChange}
+              >
+                <SelectTrigger className="h-8 text-xs">
+                  <SelectValue placeholder="选择模型" />
+                </SelectTrigger>
+                <SelectContent>
+                  {runtimeModelOptions.map(option => (
+                    <SelectItem key={option.id} value={option.id}>
+                      {option.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          )}
+
           {showBackendOffline && (
             <div className="mb-2 flex items-center justify-between gap-3 rounded-lg border border-amber-300/60 bg-amber-50/90 px-3 py-2 text-xs text-amber-900">
               <div className="min-w-0">
@@ -470,8 +531,15 @@ export function ChatInput({
                 disabled={isBackendChecking}
                 onClick={() => void retryBackendHealth()}
               >
-                {isBackendChecking ? '检查中...' : '重试连接'}
+                {isBackendChecking ? '重试中...' : '重试连接'}
               </Button>
+            </div>
+          )}
+
+          {streamStatusText && (
+            <div className="mb-2 flex items-center gap-2 px-1 text-[11px] text-(--color-muted-foreground)">
+              <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-(--color-primary)/80" />
+              <span className="truncate">{streamStatusText}</span>
             </div>
           )}
 
@@ -479,11 +547,12 @@ export function ChatInput({
             ref={textareaRef}
             aria-label="聊天输入框"
             className={cn(
-              'min-h-[48px] max-h-[144px] w-full resize-none rounded-xl border border-(--color-input) bg-(--color-card) px-4 py-3 text-sm leading-6',
+              'min-h-[48px] max-h-[144px] w-full resize-none rounded-xl border border-(--color-input) bg-(--color-card)/80 px-4 py-3 text-sm leading-6 backdrop-blur-sm',
               'placeholder:text-(--color-muted-foreground)',
               'focus:outline-none focus:ring-2 focus:ring-(--color-ring) focus:ring-offset-0',
               'disabled:cursor-not-allowed disabled:opacity-50',
             )}
+            style={textareaSurfaceStyle}
             placeholder={placeholder}
             rows={1}
             disabled={isSending}
@@ -525,7 +594,7 @@ export function ChatInput({
                       className="h-6 shrink-0 px-2 text-[11px]"
                       onClick={() => setToolPanelOpen(true)}
                     >
-                      去修正
+                      查看详情
                     </Button>
                   )}
                 </div>
@@ -638,7 +707,7 @@ export function ChatInput({
                 <TooltipContent>
                   <p>
                     {showBackendOffline
-                      ? '后端离线，请先点击“重试连接”'
+                      ? '后端离线，请先点击重试连接'
                       : hasBlockingToolValidationIssue
                         ? '请先修正 Tool 参数后再发送'
                         : '发送消息'}
@@ -652,4 +721,5 @@ export function ChatInput({
     </div>
   )
 }
+
 

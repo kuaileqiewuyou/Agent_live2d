@@ -3,7 +3,13 @@ from fastapi import APIRouter, Depends, status
 from app.core.responses import api_response
 from app.db.session import get_db_session
 from app.schemas.common import ListData
-from app.schemas.memory import LongTermMemoryCreate, LongTermMemoryRead, MemorySearchRequest, MemorySummarizeRequest
+from app.schemas.memory import (
+    LongTermMemoryCreate,
+    LongTermMemoryRead,
+    MemoryDeleteResult,
+    MemorySearchRequest,
+    MemorySummarizeRequest,
+)
 from app.services.memory import MemoryApplicationService
 from app.services.message import MessageService
 
@@ -30,6 +36,12 @@ async def create_long_term(payload: LongTermMemoryCreate, service: MemoryApplica
     return api_response(LongTermMemoryRead.model_validate(entity).model_dump(by_alias=True))
 
 
+@router.delete("/long-term/{memory_id}")
+async def delete_long_term(memory_id: str, service: MemoryApplicationService = Depends(_memory_service)):
+    result = await service.delete_long_term(memory_id)
+    return api_response(MemoryDeleteResult.model_validate(result).model_dump(by_alias=True))
+
+
 @router.post("/search")
 async def search_memory(payload: MemorySearchRequest, service: MemoryApplicationService = Depends(_memory_service)):
     items = [LongTermMemoryRead.model_validate(item).model_dump(by_alias=True) for item in await service.search(payload.model_dump())]
@@ -45,4 +57,3 @@ async def summarize_memory(
     messages = await message_service.list_messages(payload.conversation_id)
     entity = await memory_service.summarize(conversation_id=payload.conversation_id, messages=messages)
     return api_response({"id": entity.id, "summary": entity.summary, "sourceMessageCount": entity.source_message_count})
-

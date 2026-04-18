@@ -65,6 +65,61 @@ def test_model_config_default_switch_and_test_connection(client):
     assert isinstance(payload["detail"], str)
 
 
+def test_model_config_delete_in_use_returns_conflict(client):
+    persona = client.post(
+        "/api/personas",
+        json={
+            "name": "model-delete-guard-persona",
+            "avatar": "test.model3.json",
+            "description": "test persona",
+            "personalityTags": ["test"],
+            "speakingStyle": "concise",
+            "backgroundStory": "seed",
+            "openingMessage": "hello",
+            "longTermMemoryEnabled": True,
+            "defaultLayoutMode": "chat",
+            "systemPromptTemplate": "you are test persona",
+        },
+    )
+    assert persona.status_code == 201
+    persona_id = persona.json()["data"]["id"]
+
+    model = client.post(
+        "/api/models/configs",
+        json={
+            "name": "model-delete-guard",
+            "provider": "openai-compatible",
+            "baseUrl": "http://localhost:11434/v1",
+            "apiKey": "local-key",
+            "model": "gpt-test",
+            "streamEnabled": True,
+            "toolCallSupported": False,
+            "isDefault": False,
+            "extraConfig": {},
+        },
+    )
+    assert model.status_code == 201
+    model_id = model.json()["data"]["id"]
+
+    conversation = client.post(
+        "/api/conversations",
+        json={
+            "title": "model-delete-guard-conv",
+            "personaId": persona_id,
+            "modelConfigId": model_id,
+            "layoutMode": "chat",
+        },
+    )
+    assert conversation.status_code == 201
+
+    delete_response = client.delete(f"/api/models/configs/{model_id}")
+    assert delete_response.status_code == 409
+    body = delete_response.json()
+    assert body["success"] is False
+    assert body["data"]["code"] == "conflict"
+    assert "Model Config is used by" in body["message"]
+
+
 def test_skill_toggle_and_delete_flow(client):
     create = client.post(
         "/api/skills",
@@ -314,6 +369,227 @@ def test_mcp_check_retries_transient_probe_failure_then_recovers(client, monkeyp
     assert payload["status"] == "connected"
     assert payload["toolCount"] == 1
     assert attempts["count"] == 2
+
+
+def test_mcp_smoke_success_roundtrip(client, monkeypatch):
+    create = client.post(
+        "/api/mcp/servers",
+        json={
+            "name": "mcp-smoke-success",
+            "description": "MCP smoke test",
+            "transportType": "http",
+            "endpointOrCommand": "http://127.0.0.1:9922/mcp",
+            "enabled": True,
+        },
+    )
+    assert create.status_code == 201
+    server_id = create.json()["data"]["id"]
+
+    async def fake_inspect_server(self, *, transport_type: str, endpoint_or_command: str, config=None):
+        assert transport_type == "http"
+        assert endpoint_or_command == "http://127.0.0.1:9922/mcp"
+        return {
+            "ok": True,
+            "status": "connected",
+            "detail": "mcp rpc reachable (2 tools)",
+            "tools": [
+                {"name": "echo", "description": "echo"},
+                {"name": "status", "description": "status"},
+            ],
+            "resources": [],
+            "prompts": [],
+            "checked_at": datetime.now(timezone.utc),
+        }
+
+    async def fake_call_tool(
+        self,
+        *,
+        transport_type: str,
+        endpoint_or_command: str,
+        tool_name: str | None,
+        arguments: dict | None,
+        **kwargs,
+    ):
+        assert transport_type == "http"
+        assert endpoint_or_command == "http://127.0.0.1:9922/mcp"
+        assert tool_name == "echo"
+        assert arguments == {}
+        assert "file_access_folders" in kwargs
+        return {
+            "ok": True,
+            "detail": "tool call completed",
+            "tool_name": "echo",
+            "result": {"content": [{"type": "text", "text": "ok"}]},
+            "summary": "ok",
+        }
+
+    monkeypatch.setattr("app.services.mcp.MCPClientManager.inspect_server", fake_inspect_server)
+    monkeypatch.setattr("app.services.mcp.MCPClientManager.call_tool", fake_call_tool)
+
+    response = client.post(f"/api/mcp/servers/{server_id}/smoke")
+    assert response.status_code == 200
+    payload = response.json()["data"]
+    assert payload["ok"] is True
+    assert payload["status"] == "connected"
+    assert payload["usedToolName"] == "echo"
+    assert len(payload["steps"]) == 3
+    assert payload["steps"][0]["name"] == "initialize"
+    assert payload["steps"][0]["ok"] is True
+    assert payload["steps"][1]["name"] == "tools/list"
+    assert payload["steps"][1]["ok"] is True
+    assert payload["steps"][2]["name"] == "tools/call"
+    assert payload["steps"][2]["ok"] is True
+
+
+def test_mcp_smoke_fails_when_server_has_no_tools(client, monkeypatch):
+    create = client.post(
+        "/api/mcp/servers",
+        json={
+            "name": "mcp-smoke-empty-tools",
+            "description": "MCP smoke empty tools",
+            "transportType": "http",
+            "endpointOrCommand": "http://127.0.0.1:9923/mcp",
+            "enabled": True,
+        },
+    )
+    assert create.status_code == 201
+    server_id = create.json()["data"]["id"]
+
+    async def fake_inspect_server(self, *, transport_type: str, endpoint_or_command: str, config=None):
+        return {
+            "ok": True,
+            "status": "connected",
+            "detail": "mcp rpc reachable (0 tools)",
+            "tools": [],
+            "resources": [],
+            "prompts": [],
+            "checked_at": datetime.now(timezone.utc),
+        }
+
+    async def should_not_call_tool(self, **kwargs):
+        raise AssertionError("tools/call should not run when tools/list is empty")
+
+    monkeypatch.setattr("app.services.mcp.MCPClientManager.inspect_server", fake_inspect_server)
+    monkeypatch.setattr("app.services.mcp.MCPClientManager.call_tool", should_not_call_tool)
+
+    response = client.post(f"/api/mcp/servers/{server_id}/smoke")
+    assert response.status_code == 200
+    payload = response.json()["data"]
+    assert payload["ok"] is False
+    assert payload["status"] == "error"
+    assert payload["steps"][1]["name"] == "tools/list"
+    assert payload["steps"][1]["ok"] is False
+    assert payload["steps"][1]["errorCategory"] == "server"
+    assert payload["steps"][2]["name"] == "tools/call"
+    assert payload["steps"][2]["ok"] is False
+    assert payload["steps"][2]["status"] == "skipped"
+
+
+def test_mcp_smoke_forbidden_path_is_classified_as_permission(client, monkeypatch):
+    create = client.post(
+        "/api/mcp/servers",
+        json={
+            "name": "mcp-smoke-forbidden-path",
+            "description": "MCP smoke forbidden path",
+            "transportType": "http",
+            "endpointOrCommand": "http://127.0.0.1:9924/mcp",
+            "enabled": True,
+        },
+    )
+    assert create.status_code == 201
+    server_id = create.json()["data"]["id"]
+
+    async def fake_inspect_server(self, *, transport_type: str, endpoint_or_command: str, config=None):
+        return {
+            "ok": True,
+            "status": "connected",
+            "detail": "mcp rpc reachable (1 tools)",
+            "tools": [{"name": "read_file", "description": "read file"}],
+            "resources": [],
+            "prompts": [],
+            "checked_at": datetime.now(timezone.utc),
+        }
+
+    async def fake_call_tool(self, **kwargs):
+        return {
+            "ok": False,
+            "code": "forbidden_path",
+            "detail": "forbidden_path: D:/secret.txt",
+            "details": {
+                "path": "D:/secret.txt",
+                "reason": "not_in_allowlist",
+            },
+            "tool_name": "read_file",
+            "result": {},
+            "summary": "",
+        }
+
+    monkeypatch.setattr("app.services.mcp.MCPClientManager.inspect_server", fake_inspect_server)
+    monkeypatch.setattr("app.services.mcp.MCPClientManager.call_tool", fake_call_tool)
+
+    response = client.post(f"/api/mcp/servers/{server_id}/smoke")
+    assert response.status_code == 200
+    payload = response.json()["data"]
+    assert payload["ok"] is False
+    call_step = payload["steps"][2]
+    assert call_step["name"] == "tools/call"
+    assert call_step["ok"] is False
+    assert call_step["errorCategory"] == "permission"
+    assert call_step["details"]["path"] == "D:/secret.txt"
+    assert call_step["details"]["reason"] == "not_in_allowlist"
+
+
+def test_mcp_smoke_respects_specified_tool_name(client, monkeypatch):
+    create = client.post(
+        "/api/mcp/servers",
+        json={
+            "name": "mcp-smoke-specified-tool",
+            "description": "MCP smoke specified tool",
+            "transportType": "http",
+            "endpointOrCommand": "http://127.0.0.1:9925/mcp",
+            "enabled": True,
+        },
+    )
+    assert create.status_code == 201
+    server_id = create.json()["data"]["id"]
+
+    async def fake_inspect_server(self, *, transport_type: str, endpoint_or_command: str, config=None):
+        return {
+            "ok": True,
+            "status": "connected",
+            "detail": "mcp rpc reachable (2 tools)",
+            "tools": [
+                {"name": "echo", "description": "echo"},
+                {"name": "status", "description": "status"},
+            ],
+            "resources": [],
+            "prompts": [],
+            "checked_at": datetime.now(timezone.utc),
+        }
+
+    async def fake_call_tool(self, *, tool_name: str | None, arguments: dict | None, **kwargs):
+        assert tool_name == "status"
+        assert arguments == {"mode": "quick"}
+        return {
+            "ok": True,
+            "detail": "tool call completed",
+            "tool_name": "status",
+            "result": {"content": [{"type": "text", "text": "ready"}]},
+            "summary": "ready",
+        }
+
+    monkeypatch.setattr("app.services.mcp.MCPClientManager.inspect_server", fake_inspect_server)
+    monkeypatch.setattr("app.services.mcp.MCPClientManager.call_tool", fake_call_tool)
+
+    response = client.post(
+        f"/api/mcp/servers/{server_id}/smoke",
+        json={"toolName": "status", "toolArguments": {"mode": "quick"}},
+    )
+    assert response.status_code == 200
+    payload = response.json()["data"]
+    assert payload["ok"] is True
+    assert payload["usedToolName"] == "status"
+    assert payload["steps"][2]["ok"] is True
 
 
 def test_meta_catalog_endpoints(client):

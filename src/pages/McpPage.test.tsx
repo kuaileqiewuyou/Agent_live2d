@@ -7,6 +7,7 @@ import type { MCPServer } from '@/types'
 
 const getMcpServersMock = vi.fn()
 const checkConnectionMock = vi.fn()
+const smokeConnectionMock = vi.fn()
 const toggleMcpServerMock = vi.fn()
 const deleteMcpServerMock = vi.fn()
 const createMcpServerMock = vi.fn()
@@ -16,6 +17,7 @@ vi.mock('@/services', () => ({
   mcpService: {
     getMcpServers: (...args: unknown[]) => getMcpServersMock(...args),
     checkConnection: (...args: unknown[]) => checkConnectionMock(...args),
+    smokeConnection: (...args: unknown[]) => smokeConnectionMock(...args),
     toggleMcpServer: (...args: unknown[]) => toggleMcpServerMock(...args),
     deleteMcpServer: (...args: unknown[]) => deleteMcpServerMock(...args),
     createMcpServer: (...args: unknown[]) => createMcpServerMock(...args),
@@ -32,9 +34,31 @@ vi.mock('@/features/mcp/McpServerDialog', () => ({
 }))
 
 vi.mock('@/features/mcp/McpServerCard', () => ({
-  McpServerCard: ({ server, checking }: { server: MCPServer, checking: boolean }) => (
+  McpServerCard: ({
+    server,
+    checking,
+    smoking,
+    smokeResult,
+    onCheckConnection,
+    onSmokeConnection,
+  }: {
+    server: MCPServer
+    checking: boolean
+    smoking: boolean
+    smokeResult?: { summary?: string }
+    onCheckConnection: (id: string) => void
+    onSmokeConnection: (id: string) => void
+  }) => (
     <div data-testid={`mcp-card-${server.id}`} data-checking={String(checking)}>
       {server.name}
+      <button type="button" onClick={() => onCheckConnection(server.id)}>
+        检查-{server.id}
+      </button>
+      <button type="button" onClick={() => onSmokeConnection(server.id)}>
+        验收-{server.id}
+      </button>
+      <span>{String(smoking)}</span>
+      <span>{smokeResult?.summary || ''}</span>
     </div>
   ),
 }))
@@ -56,6 +80,7 @@ describe('McpPage auto check loop', () => {
   beforeEach(() => {
     getMcpServersMock.mockReset()
     checkConnectionMock.mockReset()
+    smokeConnectionMock.mockReset()
     toggleMcpServerMock.mockReset()
     deleteMcpServerMock.mockReset()
     createMcpServerMock.mockReset()
@@ -65,6 +90,17 @@ describe('McpPage auto check loop', () => {
     checkConnectionMock.mockResolvedValue({
       success: true,
       message: 'ok',
+    })
+    smokeConnectionMock.mockResolvedValue({
+      ok: true,
+      status: 'connected',
+      summary: '3/3 steps passed',
+      usedToolName: 'echo',
+      steps: [
+        { name: 'initialize', ok: true, status: 'passed', detail: 'ok' },
+        { name: 'tools/list', ok: true, status: 'passed', detail: 'ok' },
+        { name: 'tools/call', ok: true, status: 'passed', detail: 'ok' },
+      ],
     })
   })
 
@@ -93,5 +129,29 @@ describe('McpPage auto check loop', () => {
       expect(checkConnectionMock).toHaveBeenCalledTimes(1)
     })
     expect(checkConnectionMock).toHaveBeenCalledWith('mcp-1')
+  })
+
+  it('runs smoke check and stores structured summary on card', async () => {
+    render(<McpPage />)
+
+    await waitFor(() => {
+      expect(screen.getByTestId('mcp-card-mcp-1')).toBeTruthy()
+    })
+
+    await act(async () => {
+      screen.getByRole('button', { name: '验收-mcp-1' }).click()
+    })
+
+    await waitFor(() => {
+      expect(smokeConnectionMock).toHaveBeenCalledWith('mcp-1')
+    })
+    await waitFor(() => {
+      expect(screen.getByText('3/3 steps passed')).toBeTruthy()
+    })
+    expect(pushNotificationMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: '一键验收成功',
+      }),
+    )
   })
 })

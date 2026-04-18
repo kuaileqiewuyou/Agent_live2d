@@ -1,8 +1,11 @@
 import { Suspense, lazy, useEffect, useMemo, useState } from 'react'
-import { Search, Sparkles } from 'lucide-react'
+import { Loader2, Search, Sparkles, Trash2 } from 'lucide-react'
 import type { Skill } from '@/types'
 import { skillService } from '@/services'
+import { useNotificationStore } from '@/stores'
 import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
+import { BackendHealthStatus } from '@/components/common/BackendHealthStatus'
 import { Input } from '@/components/ui/input'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import {
@@ -19,15 +22,41 @@ const SkillDetailDialog = lazy(async () => {
 })
 
 export function SkillsPage() {
+  const pushNotification = useNotificationStore((state) => state.push)
   const [skills, setSkills] = useState<Skill[]>([])
   const [search, setSearch] = useState('')
   const [selectedSkill, setSelectedSkill] = useState<Skill | null>(null)
   const [detailOpen, setDetailOpen] = useState(false)
   const [activeTab, setActiveTab] = useState('all')
+  const [isCleaning, setIsCleaning] = useState(false)
 
   useEffect(() => {
-    skillService.getSkills().then(setSkills)
-  }, [])
+    let cancelled = false
+
+    async function loadSkills() {
+      try {
+        const items = await skillService.getSkills()
+        if (!cancelled) {
+          setSkills(items)
+        }
+      }
+      catch (error) {
+        if (!cancelled) {
+          pushNotification({
+            type: 'error',
+            title: '加载 Skill 列表失败',
+            description: error instanceof Error ? error.message : '请稍后重试。',
+          })
+        }
+      }
+    }
+
+    void loadSkills()
+
+    return () => {
+      cancelled = true
+    }
+  }, [pushNotification])
 
   const allTags = useMemo(() => {
     const tagSet = new Set<string>()
@@ -66,6 +95,11 @@ export function SkillsPage() {
     [skills],
   )
 
+  const testSkillCount = useMemo(
+    () => skills.filter(isTestSkill).length,
+    [skills],
+  )
+
   async function handleToggle(id: string, enabled: boolean) {
     const updated = await skillService.toggleSkill(id, enabled)
     setSkills(prev =>
@@ -79,6 +113,47 @@ export function SkillsPage() {
   function handleViewDetail(skill: Skill) {
     setSelectedSkill(skill)
     setDetailOpen(true)
+  }
+
+  async function handleCleanupTestSkills() {
+    const testSkills = skills.filter(isTestSkill)
+    if (testSkills.length === 0) {
+      pushNotification({
+        type: 'info',
+        title: '没有可清理的测试 Skill',
+        description: '当前列表中未发现带 e2e 标记的测试 Skill。',
+      })
+      return
+    }
+
+    const confirmed = window.confirm(`将删除 ${testSkills.length} 个测试 Skill（e2e），此操作不可恢复，是否继续？`)
+    if (!confirmed) return
+
+    setIsCleaning(true)
+    try {
+      await Promise.all(testSkills.map(skill => skillService.deleteSkill(skill.id)))
+      const next = await skillService.getSkills()
+      setSkills(next)
+      if (selectedSkill && isTestSkill(selectedSkill)) {
+        setSelectedSkill(null)
+        setDetailOpen(false)
+      }
+      pushNotification({
+        type: 'success',
+        title: '测试 Skill 已清理',
+        description: `已删除 ${testSkills.length} 个测试 Skill。`,
+      })
+    }
+    catch (error) {
+      pushNotification({
+        type: 'error',
+        title: '清理测试 Skill 失败',
+        description: error instanceof Error ? error.message : '请稍后重试。',
+      })
+    }
+    finally {
+      setIsCleaning(false)
+    }
   }
 
   return (
@@ -96,10 +171,35 @@ export function SkillsPage() {
               </p>
             </div>
           </div>
-          <Badge variant="secondary" className="px-3 py-1 text-xs">
-            已启用 {enabledCount} 个 Skill
-          </Badge>
+          <div className="flex items-center gap-2">
+            <Badge variant="secondary" className="px-3 py-1 text-xs">
+              已启用 {enabledCount} 个 Skill
+            </Badge>
+            <Button
+              data-testid="cleanup-test-skills-btn"
+              type="button"
+              variant="outline"
+              size="sm"
+              className="gap-1"
+              onClick={() => void handleCleanupTestSkills()}
+              disabled={isCleaning || testSkillCount === 0}
+            >
+              {isCleaning ? (
+                <>
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  清理中...
+                </>
+              ) : (
+                <>
+                  <Trash2 className="h-3.5 w-3.5" />
+                  清理测试 Skill（{testSkillCount}）
+                </>
+              )}
+            </Button>
+          </div>
         </div>
+
+        <BackendHealthStatus />
 
         <div className="relative">
           <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-(--color-muted-foreground)" />
@@ -178,4 +278,11 @@ export function SkillsPage() {
       )}
     </div>
   )
+}
+
+function isTestSkill(skill: Skill): boolean {
+  const name = skill.name.toLowerCase()
+  const description = skill.description.toLowerCase()
+  const hasE2ETag = skill.tags.some(tag => tag.toLowerCase() === 'e2e')
+  return hasE2ETag || name.includes('e2e') || description.includes('e2e')
 }

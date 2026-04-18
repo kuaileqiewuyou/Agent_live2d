@@ -1,14 +1,57 @@
 from __future__ import annotations
 
 import asyncio
+import subprocess
 import json
+import logging
 import os
 import shlex
+import shutil
 from contextlib import suppress
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
 import httpx
+
+from app.core.errors import AppError
+from app.core.file_access_guard import FileAccessGuard
+from app.mcp.runtime_pool import MCPRuntimePool, RuntimeSessionHandle
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass(slots=True)
+class _HTTPRuntimeSession(RuntimeSessionHandle):
+    endpoint: str = ""
+    client: httpx.AsyncClient | None = None
+    initialized: bool = False
+
+    async def close(self) -> None:
+        client = self.client
+        self.client = None
+        self.initialized = False
+        if client is not None:
+            await client.aclose()
+
+
+@dataclass(slots=True)
+class _StdioRuntimeSession(RuntimeSessionHandle):
+    command: str = ""
+    config: dict[str, Any] | None = None
+    process: Any | None = None
+    initialized: bool = False
+    close_process_fn: Any | None = None
+
+    async def close(self) -> None:
+        process = self.process
+        self.process = None
+        self.initialized = False
+        if process is None:
+            return
+        close_fn = self.close_process_fn
+        if callable(close_fn):
+            await close_fn(process)
 
 
 class MCPClientManager:
@@ -16,14 +59,23 @@ class MCPClientManager:
         self,
         *,
         http_timeout_seconds: float = 8.0,
-        stdio_timeout_seconds: float = 5.0,
+        stdio_timeout_seconds: float = 20.0,
         max_attempts: int = 2,
         retry_backoff_seconds: float = 0.4,
+        runtime_idle_ttl_seconds: float = 600.0,
+        runtime_max_sessions: int = 32,
     ) -> None:
         self.http_timeout_seconds = max(http_timeout_seconds, 0.1)
         self.stdio_timeout_seconds = max(stdio_timeout_seconds, 0.1)
         self.max_attempts = max(max_attempts, 1)
         self.retry_backoff_seconds = max(retry_backoff_seconds, 0.0)
+        self.runtime_pool = MCPRuntimePool(
+            idle_ttl_seconds=runtime_idle_ttl_seconds,
+            max_sessions=runtime_max_sessions,
+        )
+
+    async def close_runtime(self) -> None:
+        await self.runtime_pool.close_all()
 
     async def inspect_server(
         self,
@@ -53,7 +105,36 @@ class MCPClientManager:
         tool_name: str | None,
         arguments: dict[str, Any] | None,
         config: dict[str, Any] | None = None,
+        file_access_allow_all: bool | None = None,
+        file_access_folders: list[str] | None = None,
+        file_access_blacklist: list[str] | None = None,
     ) -> dict:
+        try:
+            self._assert_tool_arguments_allowed(
+                arguments or {},
+                file_access_allow_all=file_access_allow_all,
+                file_access_folders=file_access_folders,
+                file_access_blacklist=file_access_blacklist,
+            )
+            if transport_type == "stdio":
+                self._assert_stdio_command_allowed(
+                    endpoint_or_command,
+                    config=config,
+                    file_access_allow_all=file_access_allow_all,
+                    file_access_folders=file_access_folders,
+                    file_access_blacklist=file_access_blacklist,
+                )
+        except AppError as exc:
+            return {
+                "ok": False,
+                "code": exc.code,
+                "detail": exc.message,
+                "details": exc.details,
+                "tool_name": tool_name or "",
+                "result": {},
+                "summary": "",
+            }
+
         if transport_type == "http":
             return await self._call_http_tool_once(
                 endpoint_or_command,
@@ -75,6 +156,503 @@ class MCPClientManager:
             "result": {},
             "summary": "",
         }
+
+    async def smoke_server(
+        self,
+        *,
+        transport_type: str,
+        endpoint_or_command: str,
+        tool_name: str | None = None,
+        tool_arguments: dict[str, Any] | None = None,
+        config: dict[str, Any] | None = None,
+        file_access_allow_all: bool | None = None,
+        file_access_folders: list[str] | None = None,
+        file_access_blacklist: list[str] | None = None,
+    ) -> dict[str, Any]:
+        steps: list[dict[str, Any]] = []
+        inspection = await self.inspect_server(
+            transport_type=transport_type,
+            endpoint_or_command=endpoint_or_command,
+            config=config,
+        )
+
+        inspection_ok = bool(inspection.get("ok"))
+        inspection_detail = str(inspection.get("detail") or "")
+        inspection_diag = self._runtime_diag_from_result(inspection)
+        steps.append(
+            self._build_smoke_step(
+                name="initialize",
+                ok=inspection_ok,
+                detail=inspection_detail or ("initialize ok" if inspection_ok else "initialize failed"),
+                error_category=self._classify_smoke_error(
+                    code=inspection.get("code"),
+                    detail=inspection_detail,
+                )
+                if not inspection_ok
+                else None,
+                details=inspection_diag or None,
+            )
+        )
+        if not inspection_ok:
+            steps.append(
+                self._build_smoke_step(
+                    name="tools/list",
+                    ok=False,
+                    status="skipped",
+                    detail="skipped because initialize failed",
+                )
+            )
+            steps.append(
+                self._build_smoke_step(
+                    name="tools/call",
+                    ok=False,
+                    status="skipped",
+                    detail="skipped because initialize failed",
+                )
+            )
+            return {
+                "ok": False,
+                "status": "error",
+                "steps": steps,
+                "used_tool_name": None,
+                "summary": inspection_detail or "smoke failed at initialize",
+            }
+
+        tools_raw = inspection.get("tools")
+        tools = tools_raw if isinstance(tools_raw, list) else []
+        if not tools:
+            steps.append(
+                self._build_smoke_step(
+                    name="tools/list",
+                    ok=False,
+                    detail="server has no tool",
+                    error_category="server",
+                )
+            )
+            steps.append(
+                self._build_smoke_step(
+                    name="tools/call",
+                    ok=False,
+                    status="skipped",
+                    detail="skipped because tools/list returned empty",
+                )
+            )
+            return {
+                "ok": False,
+                "status": "error",
+                "steps": steps,
+                "used_tool_name": None,
+                "summary": "server has no tool",
+            }
+
+        steps.append(
+            self._build_smoke_step(
+                name="tools/list",
+                ok=True,
+                detail=f"found {len(tools)} tool(s)",
+            )
+        )
+
+        selected_tool_name = self._resolve_smoke_tool_name(tool_name, tools)
+        if not selected_tool_name:
+            detail = f"tool not found: {tool_name}" if isinstance(tool_name, str) and tool_name.strip() else "failed to resolve tool name"
+            steps.append(
+                self._build_smoke_step(
+                    name="tools/call",
+                    ok=False,
+                    detail=detail,
+                    error_category="config",
+                )
+            )
+            return {
+                "ok": False,
+                "status": "error",
+                "steps": steps,
+                "used_tool_name": None,
+                "summary": detail,
+            }
+
+        resolved_arguments = tool_arguments if isinstance(tool_arguments, dict) else {}
+        selected_tool = self._find_tool_by_name(tools, selected_tool_name)
+        auto_selected_tool = not (isinstance(tool_name, str) and tool_name.strip())
+        if (
+            auto_selected_tool
+            and not resolved_arguments
+            and self._tool_requires_arguments(selected_tool)
+        ):
+            required_fields = self._tool_required_fields(selected_tool)
+            required_hint = (
+                f"required fields: {', '.join(required_fields)}"
+                if required_fields
+                else "required fields unknown"
+            )
+            skip_detail = f"skipped auto tools/call because '{selected_tool_name}' requires arguments ({required_hint})"
+            steps.append(
+                self._build_smoke_step(
+                    name="tools/call",
+                    ok=True,
+                    status="skipped",
+                    detail=skip_detail,
+                )
+            )
+            return {
+                "ok": True,
+                "status": "connected",
+                "steps": steps,
+                "used_tool_name": selected_tool_name,
+                "summary": skip_detail,
+            }
+        call_result = await self.call_tool(
+            transport_type=transport_type,
+            endpoint_or_command=endpoint_or_command,
+            tool_name=selected_tool_name,
+            arguments=resolved_arguments,
+            config=config,
+            file_access_allow_all=file_access_allow_all,
+            file_access_folders=file_access_folders,
+            file_access_blacklist=file_access_blacklist,
+        )
+
+        call_ok = bool(call_result.get("ok"))
+        call_detail = str(call_result.get("detail") or "")
+        call_details_raw = call_result.get("details")
+        call_details = call_details_raw if isinstance(call_details_raw, dict) else None
+        call_diag = self._runtime_diag_from_result(call_result)
+        steps.append(
+            self._build_smoke_step(
+                name="tools/call",
+                ok=call_ok,
+                detail=call_detail or ("tool call completed" if call_ok else "tool call failed"),
+                error_category=self._classify_smoke_error(
+                    code=call_result.get("code"),
+                    detail=call_detail,
+                    details=call_details,
+                )
+                if not call_ok
+                else None,
+                details=self._merge_detail_payload(call_details, call_diag),
+            )
+        )
+
+        if not call_ok:
+            return {
+                "ok": False,
+                "status": "error",
+                "steps": steps,
+                "used_tool_name": selected_tool_name,
+                "summary": call_result.get("summary") or call_detail or "smoke failed at tools/call",
+            }
+
+        return {
+            "ok": True,
+            "status": "connected",
+            "steps": steps,
+            "used_tool_name": selected_tool_name,
+            "summary": call_result.get("summary") or "smoke passed",
+        }
+
+    def _assert_tool_arguments_allowed(
+        self,
+        arguments: dict[str, Any],
+        *,
+        file_access_allow_all: bool | None,
+        file_access_folders: list[str] | None,
+        file_access_blacklist: list[str] | None,
+    ) -> None:
+        for path_value in FileAccessGuard.collect_path_like_values(arguments):
+            FileAccessGuard.assert_allowed(
+                path_value,
+                file_access_folders,
+                allow_all=file_access_allow_all,
+                blacklist=file_access_blacklist,
+                context="MCP tools/call.arguments",
+            )
+
+    def _assert_stdio_command_allowed(
+        self,
+        command: str,
+        *,
+        config: dict[str, Any] | None,
+        file_access_allow_all: bool | None,
+        file_access_folders: list[str] | None,
+        file_access_blacklist: list[str] | None,
+    ) -> None:
+        command_parts, _ = self._build_stdio_command_parts(command, config)
+        for part in command_parts:
+            normalized = str(part).strip()
+            if not normalized:
+                continue
+            if not FileAccessGuard.is_local_absolute_path(normalized):
+                continue
+            FileAccessGuard.assert_allowed(
+                normalized,
+                file_access_folders,
+                allow_all=file_access_allow_all,
+                blacklist=file_access_blacklist,
+                context="MCP stdio command/args",
+            )
+
+    @staticmethod
+    def _build_smoke_step(
+        *,
+        name: str,
+        ok: bool,
+        detail: str,
+        status: str | None = None,
+        error_category: str | None = None,
+        details: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "name": name,
+            "ok": ok,
+            "status": status or ("passed" if ok else "failed"),
+            "detail": detail,
+        }
+        if error_category:
+            payload["error_category"] = error_category
+        if isinstance(details, dict) and details:
+            payload["details"] = details
+        return payload
+
+    @staticmethod
+    def _resolve_smoke_tool_name(tool_name: str | None, tools: list[dict[str, Any]]) -> str | None:
+        normalized_name = str(tool_name or "").strip()
+        if normalized_name:
+            for tool in tools:
+                candidate = str(tool.get("name") or "").strip()
+                if candidate == normalized_name:
+                    return candidate
+            return None
+
+        # Prefer low-risk "read-only" style tool names for default smoke calls.
+        preferred_names = (
+            "ping",
+            "health",
+            "version",
+            "info",
+            "list",
+            "read",
+            "read_graph",
+            "search",
+            "echo",
+            "status",
+        )
+        normalized_candidates: list[str] = []
+        for tool in tools:
+            candidate = str(tool.get("name") or "").strip()
+            if candidate:
+                normalized_candidates.append(candidate)
+
+        for preferred in preferred_names:
+            for candidate in normalized_candidates:
+                lower_candidate = candidate.lower()
+                if (
+                    lower_candidate == preferred
+                    or lower_candidate.endswith(f"_{preferred}")
+                    or lower_candidate.startswith(f"{preferred}_")
+                ):
+                    return candidate
+
+        for candidate in normalized_candidates:
+            return candidate
+        return None
+
+    @staticmethod
+    def _find_tool_by_name(tools: list[dict[str, Any]], tool_name: str) -> dict[str, Any]:
+        normalized_name = str(tool_name or "").strip()
+        for tool in tools:
+            candidate = str(tool.get("name") or "").strip()
+            if candidate == normalized_name:
+                return tool
+        return {}
+
+    @staticmethod
+    def _tool_input_schema(tool: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(tool, dict):
+            return {}
+        raw = tool.get("input_schema")
+        if isinstance(raw, dict):
+            return raw
+        return {}
+
+    @classmethod
+    def _tool_required_fields(cls, tool: dict[str, Any]) -> list[str]:
+        schema = cls._tool_input_schema(tool)
+        required = schema.get("required")
+        if not isinstance(required, list):
+            return []
+        normalized: list[str] = []
+        for item in required:
+            if isinstance(item, str) and item.strip():
+                normalized.append(item.strip())
+        return normalized
+
+    @classmethod
+    def _tool_requires_arguments(cls, tool: dict[str, Any]) -> bool:
+        schema = cls._tool_input_schema(tool)
+        if not schema:
+            return False
+        if cls._tool_required_fields(tool):
+            return True
+        min_properties = schema.get("minProperties")
+        return isinstance(min_properties, int) and min_properties > 0
+
+    @staticmethod
+    def _classify_smoke_error(
+        *,
+        code: Any = None,
+        detail: str | None = None,
+        details: dict[str, Any] | None = None,
+    ) -> str:
+        normalized_code = str(code or "").strip().lower()
+        reason = str((details or {}).get("reason") or "").strip().lower()
+        normalized_detail = str(detail or "").strip().lower()
+
+        if normalized_code == "forbidden_path" or reason in {"in_blacklist", "not_in_allowlist"}:
+            return "permission"
+
+        if any(
+            marker in normalized_detail
+            for marker in ("unauthorized", "authentication", "invalid api key", "api key", "401", "auth")
+        ):
+            return "auth"
+
+        if any(marker in normalized_detail for marker in ("forbidden", "permission", "denied", "403")):
+            return "permission"
+
+        if any(
+            marker in normalized_detail
+            for marker in (
+                "unsupported transport_type",
+                "missing mcp endpoint",
+                "missing stdio command",
+                "invalid stdio command",
+                "tool not found",
+                "tool name is required",
+                "server has no tool",
+            )
+        ):
+            return "config"
+
+        if any(
+            marker in normalized_detail
+            for marker in (
+                "timeout",
+                "connection refused",
+                "network",
+                "status error: 5",
+                " 500",
+                " 502",
+                " 503",
+                " 504",
+                "probe failed",
+                "service unavailable",
+            )
+        ):
+            return "server"
+
+        return "runtime"
+
+    @staticmethod
+    def _build_runtime_key(transport_type: str, endpoint_or_command: str, config: dict[str, Any] | None) -> str:
+        payload = {
+            "transportType": str(transport_type or "").strip().lower(),
+            "endpointOrCommand": str(endpoint_or_command or "").strip(),
+            "config": config if isinstance(config, dict) else {},
+        }
+        return json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
+
+    @staticmethod
+    def _runtime_diag_from_result(payload: dict[str, Any]) -> dict[str, bool]:
+        reuse = bool(payload.get("session_reuse"))
+        recreated = bool(payload.get("session_recreated"))
+        if not reuse and not recreated:
+            return {}
+        return {
+            "sessionReuse": reuse,
+            "sessionRecreated": recreated,
+        }
+
+    @staticmethod
+    def _merge_detail_payload(
+        base: dict[str, Any] | None,
+        extra: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        merged: dict[str, Any] = {}
+        if isinstance(base, dict):
+            merged.update(base)
+        if isinstance(extra, dict):
+            merged.update(extra)
+        return merged or None
+
+    async def _acquire_http_runtime_session(
+        self,
+        endpoint: str,
+        *,
+        config: dict[str, Any] | None,
+    ) -> tuple[_HTTPRuntimeSession, bool, str]:
+        key = self._build_runtime_key("http", endpoint, config)
+        kwargs = self._build_http_client_kwargs(config)
+
+        async def create() -> RuntimeSessionHandle:
+            return _HTTPRuntimeSession(
+                key=key,
+                transport="http",
+                endpoint=endpoint,
+                client=httpx.AsyncClient(**kwargs),
+            )
+
+        session, reused = await self.runtime_pool.acquire(key, create)
+        assert isinstance(session, _HTTPRuntimeSession)
+        if reused:
+            logger.debug("mcp runtime reuse hit: transport=http endpoint=%s", endpoint)
+        return session, reused, key
+
+    async def _acquire_stdio_runtime_session(
+        self,
+        command: str,
+        *,
+        config: dict[str, Any] | None,
+    ) -> tuple[_StdioRuntimeSession, bool, str]:
+        key = self._build_runtime_key("stdio", command, config)
+
+        async def create() -> RuntimeSessionHandle:
+            return _StdioRuntimeSession(
+                key=key,
+                transport="stdio",
+                command=command,
+                config=config if isinstance(config, dict) else None,
+                close_process_fn=self._close_stdio_process,
+            )
+
+        session, reused = await self.runtime_pool.acquire(key, create)
+        assert isinstance(session, _StdioRuntimeSession)
+        if reused:
+            logger.debug("mcp runtime reuse hit: transport=stdio command=%s", command)
+        return session, reused, key
+
+    async def _ensure_http_runtime_initialized(self, session: _HTTPRuntimeSession) -> None:
+        client = session.client
+        if client is None:
+            raise RuntimeError("http runtime client is not ready")
+        if session.initialized:
+            return
+        await self._initialize_http_session(client, session.endpoint)
+        session.initialized = True
+        logger.debug("mcp runtime initialized: transport=http endpoint=%s", session.endpoint)
+
+    async def _ensure_stdio_runtime_initialized(self, session: _StdioRuntimeSession) -> None:
+        process = session.process
+        if process is None or not self._is_process_running(process):
+            session.process = await self._spawn_stdio_process(session.command, config=session.config)
+            session.initialized = False
+            logger.debug("mcp runtime spawned: transport=stdio command=%s", session.command)
+        assert session.process is not None
+        if session.initialized:
+            return
+        await self._initialize_stdio_session(session.process)
+        session.initialized = True
+        logger.debug("mcp runtime initialized: transport=stdio command=%s", session.command)
 
     def _build_result(
         self,
@@ -98,6 +676,11 @@ class MCPClientManager:
             "attempts": attempts,
         }
 
+    @staticmethod
+    def _format_exception_detail(exc: Exception) -> str:
+        detail = str(exc).strip()
+        return detail or exc.__class__.__name__
+
     async def _probe_with_retry(self, probe) -> dict:
         last_result: dict | None = None
         for attempt in range(1, self.max_attempts + 1):
@@ -117,7 +700,7 @@ class MCPClientManager:
             )
 
         if not last_result.get("ok") and self.max_attempts > 1:
-            detail = str(last_result.get("detail") or "probe failed")
+            detail = str(last_result.get("detail") or "").strip() or "probe failed"
             if "after" not in detail and "attempt" not in detail:
                 detail = f"{detail} (after {self.max_attempts} attempts)"
             last_result["detail"] = detail
@@ -131,20 +714,51 @@ class MCPClientManager:
             return await self._inspect_http_legacy_once(endpoint, config=config)
 
     async def _inspect_http_mcp_once(self, endpoint: str, *, config: dict[str, Any] | None = None) -> dict:
-        async with httpx.AsyncClient(**self._build_http_client_kwargs(config)) as client:
-            await self._initialize_http_session(client, endpoint)
-            tools = await self._list_http_tools(client, endpoint)
-            resources = await self._list_http_resources(client, endpoint)
-            prompts = await self._list_http_prompts(client, endpoint)
+        normalized_endpoint = str(endpoint or "").strip()
+        if not normalized_endpoint:
+            raise RuntimeError("missing MCP endpoint")
 
-        return self._build_result(
-            ok=True,
-            status="connected",
-            detail=f"mcp rpc reachable ({len(tools)} tools)",
-            tools=tools,
-            resources=resources,
-            prompts=prompts,
+        session, reused, key = await self._acquire_http_runtime_session(
+            normalized_endpoint,
+            config=config,
         )
+        recreated = False
+
+        for _attempt in range(2):
+            try:
+                async with session.lock:
+                    await self._ensure_http_runtime_initialized(session)
+                    assert session.client is not None
+                    tools = await self._list_http_tools(session.client, normalized_endpoint)
+                    resources = await self._list_http_resources(session.client, normalized_endpoint)
+                    prompts = await self._list_http_prompts(session.client, normalized_endpoint)
+                result = self._build_result(
+                    ok=True,
+                    status="connected",
+                    detail=f"mcp rpc reachable ({len(tools)} tools)",
+                    tools=tools,
+                    resources=resources,
+                    prompts=prompts,
+                )
+                result["session_reuse"] = reused
+                result["session_recreated"] = recreated
+                return result
+            except Exception:
+                invalidated = await self.runtime_pool.invalidate(key)
+                if not invalidated:
+                    raise
+                if not recreated:
+                    recreated = True
+                    logger.warning("mcp runtime recreated after http inspect failure: %s", normalized_endpoint)
+                    session, reused, key = await self._acquire_http_runtime_session(
+                        normalized_endpoint,
+                        config=config,
+                    )
+                    session.recreate_count += 1
+                    continue
+                raise
+
+        raise RuntimeError("http runtime inspect failed after recreation")
 
     async def _inspect_http_legacy_once(self, endpoint: str, *, config: dict[str, Any] | None = None) -> dict:
         detail = "HTTP endpoint reachable"
@@ -172,7 +786,7 @@ class MCPClientManager:
             detail = f"http request error: {exc}"
         except Exception as exc:
             status = "error"
-            detail = str(exc)
+            detail = self._format_exception_detail(exc)
         return self._build_result(
             ok=status == "connected",
             status=status,
@@ -200,45 +814,79 @@ class MCPClientManager:
                 "summary": "",
             }
 
-        try:
-            async with httpx.AsyncClient(**self._build_http_client_kwargs(config)) as client:
-                await self._initialize_http_session(client, normalized_endpoint)
-                tools = await self._list_http_tools(client, normalized_endpoint)
-                resolved_tool_name = self._resolve_tool_name(tool_name, tools)
-                if not resolved_tool_name:
-                    return {
-                        "ok": False,
-                        "detail": "tool name is required (or server must expose exactly one tool)",
-                        "tool_name": "",
-                        "result": {"tools": tools},
-                        "summary": "",
-                    }
-                tool_result = await self._jsonrpc_request(
-                    client,
-                    normalized_endpoint,
-                    "tools/call",
-                    {
-                        "name": resolved_tool_name,
-                        "arguments": arguments,
-                    },
-                )
-            summary = self._summarize_tool_result(tool_result)
-            is_error = bool(isinstance(tool_result, dict) and tool_result.get("isError"))
-            return {
-                "ok": not is_error,
-                "detail": "tool call completed" if not is_error else "tool call returned isError=true",
-                "tool_name": resolved_tool_name,
-                "result": tool_result,
-                "summary": summary,
-            }
-        except Exception as exc:
-            return {
-                "ok": False,
-                "detail": str(exc),
-                "tool_name": tool_name or "",
-                "result": {},
-                "summary": "",
-            }
+        session, reused, key = await self._acquire_http_runtime_session(
+            normalized_endpoint,
+            config=config,
+        )
+        recreated = False
+
+        for _attempt in range(2):
+            try:
+                async with session.lock:
+                    await self._ensure_http_runtime_initialized(session)
+                    assert session.client is not None
+                    tools = await self._list_http_tools(session.client, normalized_endpoint)
+                    resolved_tool_name = self._resolve_tool_name(tool_name, tools)
+                    if not resolved_tool_name:
+                        return {
+                            "ok": False,
+                            "detail": "tool name is required (or server must expose exactly one tool)",
+                            "tool_name": "",
+                            "result": {"tools": tools},
+                            "summary": "",
+                            "session_reuse": reused,
+                            "session_recreated": recreated,
+                        }
+                    tool_result = await self._jsonrpc_request(
+                        session.client,
+                        normalized_endpoint,
+                        "tools/call",
+                        {
+                            "name": resolved_tool_name,
+                            "arguments": arguments,
+                        },
+                    )
+                summary = self._summarize_tool_result(tool_result)
+                is_error = bool(isinstance(tool_result, dict) and tool_result.get("isError"))
+                return {
+                    "ok": not is_error,
+                    "detail": "tool call completed" if not is_error else "tool call returned isError=true",
+                    "tool_name": resolved_tool_name,
+                    "result": tool_result,
+                    "summary": summary,
+                    "session_reuse": reused,
+                    "session_recreated": recreated,
+                }
+            except Exception as exc:
+                invalidated = await self.runtime_pool.invalidate(key)
+                if invalidated and not recreated:
+                    recreated = True
+                    logger.warning("mcp runtime recreated after http tools/call failure: %s", normalized_endpoint)
+                    session, reused, key = await self._acquire_http_runtime_session(
+                        normalized_endpoint,
+                        config=config,
+                    )
+                    session.recreate_count += 1
+                    continue
+                return {
+                    "ok": False,
+                    "detail": self._format_exception_detail(exc),
+                    "tool_name": tool_name or "",
+                    "result": {},
+                    "summary": "",
+                    "session_reuse": reused,
+                    "session_recreated": recreated,
+                }
+
+        return {
+            "ok": False,
+            "detail": "http runtime call failed after recreation",
+            "tool_name": tool_name or "",
+            "result": {},
+            "summary": "",
+            "session_reuse": reused,
+            "session_recreated": recreated,
+        }
 
     def _build_http_client_kwargs(self, config: dict[str, Any] | None) -> dict[str, Any]:
         timeout_seconds = self.http_timeout_seconds
@@ -369,6 +1017,13 @@ class MCPClientManager:
                 {
                     "name": name_value.strip(),
                     "description": str(item.get("description") or "").strip(),
+                    "input_schema": item.get("inputSchema")
+                    if isinstance(item.get("inputSchema"), dict)
+                    else (
+                        item.get("input_schema")
+                        if isinstance(item.get("input_schema"), dict)
+                        else {}
+                    ),
                 }
             )
         return normalized
@@ -430,6 +1085,12 @@ class MCPClientManager:
         if not command_parts:
             raise RuntimeError("missing stdio command")
 
+        # On Windows, commands such as "npx" resolve to "*.CMD". Without resolving
+        # via PATH first, create_subprocess_exec may raise WinError 2.
+        resolved_executable = shutil.which(command_parts[0])
+        if resolved_executable:
+            command_parts[0] = resolved_executable
+
         args: list[str] = []
         env: dict[str, str] | None = None
         if isinstance(config, dict):
@@ -449,39 +1110,77 @@ class MCPClientManager:
 
     async def _spawn_stdio_process(self, command: str, config: dict[str, Any] | None):
         command_parts, env = self._build_stdio_command_parts(command, config)
-        process = await asyncio.create_subprocess_exec(
-            command_parts[0],
-            *command_parts[1:],
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env=env,
-        )
+        try:
+            process = await asyncio.create_subprocess_exec(
+                command_parts[0],
+                *command_parts[1:],
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=env,
+            )
+        except NotImplementedError:
+            # Windows SelectorEventLoop doesn't support asyncio subprocess APIs.
+            # Fallback to sync subprocess + thread bridge so stdio MCP remains usable.
+            logger.warning(
+                "asyncio subprocess not supported by current loop; fallback to sync subprocess for stdio mcp: %s",
+                command_parts[0],
+            )
+
+            def _spawn_sync():
+                return subprocess.Popen(
+                    command_parts,
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    env=env,
+                )
+
+            process = await asyncio.wait_for(
+                asyncio.to_thread(_spawn_sync),
+                timeout=self.stdio_timeout_seconds,
+            )
         if process.stdin is None or process.stdout is None:
             raise RuntimeError("failed to open stdio pipes")
         return process
 
     async def _stdio_write_frame(self, writer: asyncio.StreamWriter, payload: dict[str, Any]) -> None:
-        encoded = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        header = f"Content-Length: {len(encoded)}\r\n\r\n".encode("ascii")
-        writer.write(header + encoded)
-        await asyncio.wait_for(writer.drain(), timeout=self.stdio_timeout_seconds)
+        encoded = (json.dumps(payload, ensure_ascii=False) + "\n").encode("utf-8")
+        await self._write_stream_payload(writer, encoded)
 
     async def _stdio_read_frame(self, reader: asyncio.StreamReader) -> dict[str, Any]:
-        headers: dict[str, str] = {}
-        while True:
-            raw_line = await asyncio.wait_for(reader.readline(), timeout=self.stdio_timeout_seconds)
-            if raw_line == b"":
-                raise RuntimeError("stdio process closed before response")
-            if raw_line in (b"\r\n", b"\n"):
-                break
+        raw_line = await self._read_stream_line(reader)
+        if raw_line == b"":
+            raise RuntimeError("stdio process closed before response")
 
-            line = raw_line.decode(errors="ignore").strip()
-            if not line:
+        line = raw_line.decode("utf-8", errors="ignore").strip()
+        if not line:
+            return await self._stdio_read_frame(reader)
+
+        # Newer MCP SDK stdio transport uses newline-delimited JSON-RPC.
+        if not line.lower().startswith("content-length:"):
+            try:
+                payload = json.loads(line)
+            except Exception as exc:  # noqa: BLE001
+                raise RuntimeError("invalid json payload from stdio server") from exc
+            if not isinstance(payload, dict):
+                raise RuntimeError("invalid stdio payload: expected object")
+            return payload
+
+        # Backward compatibility: support Content-Length framed responses.
+        headers: dict[str, str] = {"content-length": line.split(":", 1)[1].strip()}
+        while True:
+            header_line = await self._read_stream_line(reader)
+            if header_line == b"":
+                raise RuntimeError("stdio process closed before response")
+            if header_line in (b"\r\n", b"\n"):
                 break
-            if ":" not in line:
-                raise RuntimeError(f"invalid stdio header line: {line}")
-            name, value = line.split(":", 1)
+            normalized = header_line.decode("utf-8", errors="ignore").strip()
+            if not normalized:
+                break
+            if ":" not in normalized:
+                raise RuntimeError(f"invalid stdio header line: {normalized}")
+            name, value = normalized.split(":", 1)
             headers[name.strip().lower()] = value.strip()
 
         length_raw = headers.get("content-length")
@@ -494,7 +1193,7 @@ class MCPClientManager:
         if content_length < 0:
             raise RuntimeError("invalid Content-Length: must be >= 0")
 
-        payload_raw = await asyncio.wait_for(reader.readexactly(content_length), timeout=self.stdio_timeout_seconds)
+        payload_raw = await self._read_stream_exactly(reader, content_length)
         try:
             payload = json.loads(payload_raw.decode("utf-8"))
         except Exception as exc:  # noqa: BLE001
@@ -566,21 +1265,130 @@ class MCPClientManager:
             return []
 
     async def _close_stdio_process(self, process) -> None:
-        if process.stdin is not None:
+        if isinstance(process, asyncio.subprocess.Process):
+            if process.stdin is not None:
+                with suppress(Exception):
+                    process.stdin.close()
             with suppress(Exception):
-                process.stdin.close()
-        with suppress(Exception):
-            await asyncio.wait_for(process.wait(), timeout=0.2)
-        if process.returncode is None:
+                await asyncio.wait_for(process.wait(), timeout=0.2)
+            if process.returncode is None:
+                with suppress(Exception):
+                    process.terminate()
+                with suppress(Exception):
+                    await asyncio.wait_for(process.wait(), timeout=0.5)
+            if process.returncode is None:
+                with suppress(Exception):
+                    process.kill()
+                with suppress(Exception):
+                    await asyncio.wait_for(process.wait(), timeout=0.5)
+            return
+
+        stdin = getattr(process, "stdin", None)
+        if stdin is not None:
+            with suppress(Exception):
+                stdin.close()
+        await self._wait_sync_process(process, timeout=0.2)
+        if self._is_process_running(process):
             with suppress(Exception):
                 process.terminate()
-            with suppress(Exception):
-                await asyncio.wait_for(process.wait(), timeout=0.5)
-        if process.returncode is None:
+            await self._wait_sync_process(process, timeout=0.5)
+        if self._is_process_running(process):
             with suppress(Exception):
                 process.kill()
+            await self._wait_sync_process(process, timeout=0.5)
+
+    @staticmethod
+    def _is_process_running(process: Any) -> bool:
+        if isinstance(process, asyncio.subprocess.Process):
+            return process.returncode is None
+        poll_fn = getattr(process, "poll", None)
+        if callable(poll_fn):
             with suppress(Exception):
-                await asyncio.wait_for(process.wait(), timeout=0.5)
+                return poll_fn() is None
+        return getattr(process, "returncode", None) is None
+
+    async def _wait_sync_process(self, process: Any, *, timeout: float) -> None:
+        wait_fn = getattr(process, "wait", None)
+        if not callable(wait_fn):
+            return
+
+        def _wait() -> None:
+            try:
+                wait_fn(timeout=timeout)
+            except TypeError:
+                wait_fn()
+
+        with suppress(Exception):
+            await asyncio.wait_for(
+                asyncio.to_thread(_wait),
+                timeout=max(timeout, 0.1) + 0.1,
+            )
+
+    async def _write_stream_payload(self, stream: Any, payload: bytes) -> None:
+        # asyncio StreamWriter path
+        if hasattr(stream, "drain") and callable(getattr(stream, "drain", None)):
+            stream.write(payload)
+            await asyncio.wait_for(stream.drain(), timeout=self.stdio_timeout_seconds)
+            return
+
+        # sync file-like path (subprocess.Popen stdio), run in thread to avoid blocking loop.
+        write_fn = getattr(stream, "write", None)
+        flush_fn = getattr(stream, "flush", None)
+        if not callable(write_fn):
+            raise RuntimeError("stdio stream does not support write")
+
+        def _write_sync() -> None:
+            write_fn(payload)
+            if callable(flush_fn):
+                flush_fn()
+
+        await asyncio.wait_for(
+            asyncio.to_thread(_write_sync),
+            timeout=self.stdio_timeout_seconds,
+        )
+
+    async def _read_stream_line(self, stream: Any) -> bytes:
+        readline_fn = getattr(stream, "readline", None)
+        if not callable(readline_fn):
+            raise RuntimeError("stdio stream does not support readline")
+
+        if isinstance(stream, asyncio.StreamReader):
+            raw_line = await asyncio.wait_for(
+                stream.readline(),
+                timeout=self.stdio_timeout_seconds,
+            )
+        else:
+            raw_line = await asyncio.wait_for(
+                asyncio.to_thread(readline_fn),
+                timeout=self.stdio_timeout_seconds,
+            )
+
+        if isinstance(raw_line, bytes):
+            return raw_line
+        if isinstance(raw_line, str):
+            return raw_line.encode("utf-8", errors="ignore")
+        raise RuntimeError("invalid stdio payload line type")
+
+    async def _read_stream_exactly(self, stream: Any, size: int) -> bytes:
+        if isinstance(stream, asyncio.StreamReader):
+            return await asyncio.wait_for(
+                stream.readexactly(size),
+                timeout=self.stdio_timeout_seconds,
+            )
+
+        read_fn = getattr(stream, "read", None)
+        if not callable(read_fn):
+            raise RuntimeError("stdio stream does not support read")
+
+        payload_raw = await asyncio.wait_for(
+            asyncio.to_thread(read_fn, size),
+            timeout=self.stdio_timeout_seconds,
+        )
+        if isinstance(payload_raw, bytes):
+            return payload_raw
+        if isinstance(payload_raw, str):
+            return payload_raw.encode("utf-8", errors="ignore")
+        raise RuntimeError("invalid stdio payload bytes type")
 
     async def _call_stdio_tool_once(
         self,
@@ -590,79 +1398,129 @@ class MCPClientManager:
         arguments: dict[str, Any],
         config: dict[str, Any] | None = None,
     ) -> dict:
-        try:
-            process = await self._spawn_stdio_process(command, config=config)
-        except Exception as exc:
+        normalized_command = str(command or "").strip()
+        if not normalized_command:
             return {
                 "ok": False,
-                "detail": str(exc),
+                "detail": "missing stdio command",
                 "tool_name": tool_name or "",
                 "result": {},
                 "summary": "",
             }
 
-        try:
-            await self._initialize_stdio_session(process)
-            tools = await self._list_stdio_tools(process)
-            resolved_tool_name = self._resolve_tool_name(tool_name, tools)
-            if not resolved_tool_name:
+        session, reused, key = await self._acquire_stdio_runtime_session(normalized_command, config=config)
+        recreated = False
+
+        for _attempt in range(2):
+            try:
+                async with session.lock:
+                    await self._ensure_stdio_runtime_initialized(session)
+                    assert session.process is not None
+                    tools = await self._list_stdio_tools(session.process)
+                    resolved_tool_name = self._resolve_tool_name(tool_name, tools)
+                    if not resolved_tool_name:
+                        return {
+                            "ok": False,
+                            "detail": "tool name is required (or server must expose exactly one tool)",
+                            "tool_name": "",
+                            "result": {"tools": tools},
+                            "summary": "",
+                            "session_reuse": reused,
+                            "session_recreated": recreated,
+                        }
+                    tool_result = await self._stdio_jsonrpc_request(
+                        session.process,
+                        "tools/call",
+                        {
+                            "name": resolved_tool_name,
+                            "arguments": arguments,
+                        },
+                    )
+                summary = self._summarize_tool_result(tool_result)
+                is_error = bool(isinstance(tool_result, dict) and tool_result.get("isError"))
+                return {
+                    "ok": not is_error,
+                    "detail": "tool call completed" if not is_error else "tool call returned isError=true",
+                    "tool_name": resolved_tool_name,
+                    "result": tool_result,
+                    "summary": summary,
+                    "session_reuse": reused,
+                    "session_recreated": recreated,
+                }
+            except Exception as exc:
+                invalidated = await self.runtime_pool.invalidate(key)
+                if invalidated and not recreated:
+                    recreated = True
+                    logger.warning("mcp runtime recreated after stdio tools/call failure: %s", normalized_command)
+                    session, reused, key = await self._acquire_stdio_runtime_session(normalized_command, config=config)
+                    session.recreate_count += 1
+                    continue
                 return {
                     "ok": False,
-                    "detail": "tool name is required (or server must expose exactly one tool)",
-                    "tool_name": "",
-                    "result": {"tools": tools},
+                    "detail": self._format_exception_detail(exc),
+                    "tool_name": tool_name or "",
+                    "result": {},
                     "summary": "",
+                    "session_reuse": reused,
+                    "session_recreated": recreated,
                 }
-            tool_result = await self._stdio_jsonrpc_request(
-                process,
-                "tools/call",
-                {
-                    "name": resolved_tool_name,
-                    "arguments": arguments,
-                },
-            )
-            summary = self._summarize_tool_result(tool_result)
-            is_error = bool(isinstance(tool_result, dict) and tool_result.get("isError"))
-            return {
-                "ok": not is_error,
-                "detail": "tool call completed" if not is_error else "tool call returned isError=true",
-                "tool_name": resolved_tool_name,
-                "result": tool_result,
-                "summary": summary,
-            }
-        except Exception as exc:
-            return {
-                "ok": False,
-                "detail": str(exc),
-                "tool_name": tool_name or "",
-                "result": {},
-                "summary": "",
-            }
-        finally:
-            await self._close_stdio_process(process)
+
+        return {
+            "ok": False,
+            "detail": "stdio runtime call failed after recreation",
+            "tool_name": tool_name or "",
+            "result": {},
+            "summary": "",
+            "session_reuse": reused,
+            "session_recreated": recreated,
+        }
 
     async def _inspect_stdio_once(self, command: str, *, config: dict[str, Any] | None = None) -> dict:
-        try:
-            process = await self._spawn_stdio_process(command, config=config)
-        except Exception as exc:
-            return self._build_result(ok=False, detail=str(exc))
+        normalized_command = str(command or "").strip()
+        if not normalized_command:
+            return self._build_result(ok=False, detail="missing stdio command")
 
-        try:
-            await self._initialize_stdio_session(process)
-            tools = await self._list_stdio_tools(process)
-            resources = await self._list_stdio_resources(process)
-            prompts = await self._list_stdio_prompts(process)
-            return self._build_result(
-                ok=True,
-                status="connected",
-                detail=f"stdio mcp reachable ({len(tools)} tools)",
-                tools=tools,
-                resources=resources,
-                prompts=prompts,
-            )
-        except asyncio.TimeoutError:
-            return self._build_result(ok=False, detail=f"stdio timeout after {self.stdio_timeout_seconds:.1f}s")
-        except Exception as exc:
-            return self._build_result(ok=False, detail=str(exc))
-        finally:
-            await self._close_stdio_process(process)
+        session, reused, key = await self._acquire_stdio_runtime_session(normalized_command, config=config)
+        recreated = False
+
+        for _attempt in range(2):
+            try:
+                async with session.lock:
+                    await self._ensure_stdio_runtime_initialized(session)
+                    assert session.process is not None
+                    tools = await self._list_stdio_tools(session.process)
+                    resources = await self._list_stdio_resources(session.process)
+                    prompts = await self._list_stdio_prompts(session.process)
+                result = self._build_result(
+                    ok=True,
+                    status="connected",
+                    detail=f"stdio mcp reachable ({len(tools)} tools)",
+                    tools=tools,
+                    resources=resources,
+                    prompts=prompts,
+                )
+                result["session_reuse"] = reused
+                result["session_recreated"] = recreated
+                return result
+            except asyncio.TimeoutError:
+                detail = f"stdio timeout after {self.stdio_timeout_seconds:.1f}s"
+            except Exception as exc:
+                detail = self._format_exception_detail(exc)
+
+            invalidated = await self.runtime_pool.invalidate(key)
+            if invalidated and not recreated:
+                recreated = True
+                logger.warning("mcp runtime recreated after stdio inspect failure: %s", normalized_command)
+                session, reused, key = await self._acquire_stdio_runtime_session(normalized_command, config=config)
+                session.recreate_count += 1
+                continue
+
+            result = self._build_result(ok=False, detail=detail)
+            result["session_reuse"] = reused
+            result["session_recreated"] = recreated
+            return result
+
+        result = self._build_result(ok=False, detail="stdio runtime inspect failed after recreation")
+        result["session_reuse"] = reused
+        result["session_recreated"] = recreated
+        return result

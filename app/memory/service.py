@@ -28,6 +28,7 @@ class MemoryService:
         self._qdrant_warning_state: dict[str, dict[str, float | int | None]] = {
             "upsert": {"last_ts": None, "suppressed": 0},
             "search": {"last_ts": None, "suppressed": 0},
+            "delete": {"last_ts": None, "suppressed": 0},
         }
 
     @staticmethod
@@ -136,3 +137,17 @@ class MemoryService:
 
     async def list_summaries(self, conversation_id: str) -> list:
         return await self.summary_repo.list_by_conversation(conversation_id)
+
+    async def delete_long_term_memory(self, memory: object) -> None:
+        await self.long_term_repo.delete(memory)
+        vector_id = getattr(memory, "vector_id", None)
+        if not vector_id:
+            return
+        try:
+            await self.vector_store.delete_memory(memory_id=vector_id)
+        except Exception as exc:  # pragma: no cover - integration path
+            self._log_qdrant_warning(
+                channel="delete",
+                title="Qdrant delete degraded; sqlite memory already deleted",
+                exc=exc,
+            )

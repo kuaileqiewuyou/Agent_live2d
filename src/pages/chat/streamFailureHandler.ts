@@ -6,6 +6,7 @@ import type {
   NotificationType,
 } from '@/types'
 import { ApiRequestError } from '@/api/errors'
+import { parseForbiddenPathViolation, type ForbiddenPathViolation } from '@/utils'
 
 export type StreamFailureOutcome = 'stream-interrupted' | 'fallback-sent' | 'fallback-failed'
 
@@ -19,6 +20,7 @@ interface PushNotificationPayload {
 interface HandleStreamFailureArgs {
   streamError?: unknown
   streamAcceptedByServer: boolean
+  cancelledByUser?: boolean
   conversationId: string
   nonce: number
   assistantId: string
@@ -43,6 +45,7 @@ interface HandleStreamFailureArgs {
   ) => Promise<ChatTurn>
   updateMessage: (id: string, patch: Partial<Message>) => void
   pushNotification: (payload: PushNotificationPayload) => void
+  onForbiddenPath?: (violation: ForbiddenPathViolation) => void
   onLoadConversationError?: (error: unknown) => void
   recoverRetryCount?: number
   recoverRetryDelayMs?: number
@@ -60,6 +63,7 @@ const PROVIDER_NOTICE_TITLE = 'Provider 不可用'
 const PROVIDER_NOTICE_DESCRIPTION = '当前模型 Provider 暂不可用，请检查 Model Config / API Key 后重试。'
 const UNRECOVERABLE_NOTICE_TITLE = '发送失败'
 const UNRECOVERABLE_FALLBACK = '发送失败，请稍后重试。'
+const USER_STOPPED_SYSTEM_HINT = '已停止本轮生成。'
 
 function toErrorMessage(error: unknown, fallback: string) {
   return error instanceof Error ? error.message : fallback
@@ -261,6 +265,7 @@ function pushInProgressNotice(
 export async function handleStreamFailure(args: HandleStreamFailureArgs): Promise<StreamFailureOutcome> {
   const {
     streamAcceptedByServer,
+    cancelledByUser,
     conversationId,
     nonce,
     assistantId,
@@ -275,6 +280,7 @@ export async function handleStreamFailure(args: HandleStreamFailureArgs): Promis
     sendFallbackMessage,
     updateMessage,
     pushNotification,
+    onForbiddenPath,
     onLoadConversationError,
     recoverRetryCount,
     recoverRetryDelayMs,
@@ -286,6 +292,20 @@ export async function handleStreamFailure(args: HandleStreamFailureArgs): Promis
     loadConversation,
     onLoadConversationError,
   })
+
+  if (cancelledByUser) {
+    const persistedMessages = dropTransientMessages(getCurrentMessages())
+    setMessages([
+      ...persistedMessages,
+      createTransientMessage(
+        conversationId,
+        `stopped-${nonce}`,
+        'system',
+        USER_STOPPED_SYSTEM_HINT,
+      ),
+    ])
+    return 'stream-interrupted'
+  }
 
   if (isRequestInProgressError(streamError)) {
     try {
@@ -369,6 +389,30 @@ export async function handleStreamFailure(args: HandleStreamFailureArgs): Promis
     return 'fallback-sent'
   }
   catch (fallbackError) {
+    const forbiddenPath = parseForbiddenPathViolation(fallbackError)
+    if (forbiddenPath) {
+      onForbiddenPath?.(forbiddenPath)
+      const message = forbiddenPath.message || toErrorMessage(fallbackError, UNRECOVERABLE_FALLBACK)
+      settleAssistantError({
+        assistantId,
+        message,
+        getCurrentMessages,
+        setMessages,
+        dropTransientMessages,
+      })
+      updateMessage(assistantId, {
+        status: 'error',
+        content: message,
+      })
+      pushNotification({
+        type: 'info',
+        title: '文件访问权限不足',
+        description: '已弹出授权请求窗口，可允许目录访问后重试。',
+        action: refreshAction,
+      })
+      return 'fallback-failed'
+    }
+
     if (isRequestInProgressError(fallbackError)) {
       try {
         await loadConversation(conversationId)

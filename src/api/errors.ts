@@ -1,15 +1,17 @@
-export const GENERIC_ERROR_MESSAGE = '请求失败，请稍后重试。'
+﻿export const GENERIC_ERROR_MESSAGE = '请求失败，请稍后重试。'
 export const NETWORK_ERROR_MESSAGE = '无法连接到后端服务，请确认后端已启动且端口配置正确。'
 
 export class ApiRequestError extends Error {
   code?: string
   status?: number
+  details?: Record<string, unknown>
 
-  constructor(message: string, options: { code?: string, status?: number } = {}) {
+  constructor(message: string, options: { code?: string, status?: number, details?: Record<string, unknown> } = {}) {
     super(message)
     this.name = 'ApiRequestError'
     this.code = options.code
     this.status = options.status
+    this.details = options.details
   }
 }
 
@@ -49,13 +51,27 @@ function extractMessage(value: unknown): string | undefined {
   return undefined
 }
 
+function extractDetails(value: unknown): Record<string, unknown> | undefined {
+  if (!isPlainObject(value)) return undefined
+  if (!isPlainObject(value.data)) return undefined
+
+  const data = value.data
+  const details: Record<string, unknown> = {}
+  for (const [key, item] of Object.entries(data)) {
+    if (key === 'code') continue
+    details[key] = item
+  }
+  return Object.keys(details).length > 0 ? details : undefined
+}
+
 export async function parseApiError(response: Response): Promise<Error> {
   try {
     const payload = await response.json()
     const message = extractMessage(payload)
     const code = extractCode(payload)
+    const details = extractDetails(payload)
     if (message) {
-      return new ApiRequestError(message, { code, status: response.status })
+      return new ApiRequestError(message, { code, status: response.status, details })
     }
   }
   catch {

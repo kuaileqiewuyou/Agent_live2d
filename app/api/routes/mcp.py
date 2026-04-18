@@ -3,7 +3,14 @@ from fastapi import APIRouter, Depends, status
 from app.core.responses import api_response
 from app.db.session import get_db_session
 from app.schemas.common import ListData
-from app.schemas.mcp import MCPServerCheckResult, MCPServerCreate, MCPServerRead, MCPServerUpdate
+from app.schemas.mcp import (
+    MCPServerCheckResult,
+    MCPServerCreate,
+    MCPServerRead,
+    MCPServerSmokeRequest,
+    MCPServerSmokeResult,
+    MCPServerUpdate,
+)
 from app.services.mcp import MCPServerService
 
 router = APIRouter()
@@ -56,3 +63,16 @@ async def check_server(server_id: str, service: MCPServerService = Depends(_serv
 @router.get("/{server_id}/capabilities")
 async def get_capabilities(server_id: str, service: MCPServerService = Depends(_service)):
     return api_response(await service.get_capabilities(server_id) or {})
+
+
+@router.post("/{server_id}/smoke")
+async def smoke_server(
+    server_id: str,
+    payload: MCPServerSmokeRequest | None = None,
+    service: MCPServerService = Depends(_service),
+):
+    result = await service.smoke_server(
+        server_id,
+        payload.model_dump(exclude_none=True) if payload else None,
+    )
+    return api_response(MCPServerSmokeResult.model_validate(result).model_dump(by_alias=True))

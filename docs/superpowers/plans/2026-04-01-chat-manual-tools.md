@@ -1,6 +1,6 @@
 # Chat Manual Tools Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED PROCESS: Follow the mandatory superpower-plus flow in order: `brainstorming -> writing-acceptance-criteria -> writing-plans -> executing-plans`. Do not implement changes before the flow is completed. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add a chat-side tool panel so users can manually trigger enabled skills and MCP servers, with assistant-composed final replies and expandable raw tool results.
 

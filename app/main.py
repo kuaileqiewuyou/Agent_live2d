@@ -13,13 +13,17 @@ from app.core.logging import configure_logging
 from app.core.responses import api_response
 from app.db.init_db import init_db
 from app.db.session import get_engine
+from app.mcp import shutdown_mcp_runtime
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     configure_logging()
     await init_db(get_engine())
-    yield
+    try:
+        yield
+    finally:
+        await shutdown_mcp_runtime()
 
 
 def create_app() -> FastAPI:
@@ -32,6 +36,7 @@ def create_app() -> FastAPI:
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,
+        allow_origin_regex=settings.cors_origin_regex,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],

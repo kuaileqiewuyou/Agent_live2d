@@ -78,6 +78,10 @@ jobs:
         if: ${{ needs.detect_changes.outputs.frontend == 'true' || needs.detect_changes.outputs.e2e == 'true' }}
         run: npm ci
 
+      - name: Run text encoding gate
+        if: ${{ needs.detect_changes.outputs.frontend == 'true' }}
+        run: npm run check:text-encoding
+
       - name: Run frontend unit tests
         if: ${{ needs.detect_changes.outputs.frontend == 'true' }}
         run: |

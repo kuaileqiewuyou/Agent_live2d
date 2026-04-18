@@ -17,13 +17,9 @@ class AnthropicProvider(LLMProvider):
         try:
             data = await self._request_messages(payload)
             return self._parse_messages_response(data)
-        except Exception:
-            user_input = next((item.get("content", "") for item in reversed(messages) if item.get("role") == "user"), "")
-            return {
-                "content": f"Anthropic local fallback: {user_input}",
-                "tool_calls": [],
-                "raw": {"fallback": True},
-            }
+        except Exception as exc:
+            detail = self._extract_error_detail(exc)
+            raise RuntimeError(f"Anthropic chat request failed: {detail}") from exc
 
     async def chat_with_tools(
         self,
@@ -43,10 +39,9 @@ class AnthropicProvider(LLMProvider):
         try:
             data = await self._request_messages(payload)
             return self._parse_messages_response(data)
-        except Exception:
-            base = await self.chat(messages, **kwargs)
-            base["tool_calls"] = []
-            return base
+        except Exception as exc:
+            detail = self._extract_error_detail(exc)
+            raise RuntimeError(f"Anthropic tool-call request failed: {detail}") from exc
 
     async def stream_chat(self, messages: list[dict], **kwargs) -> AsyncIterator[ChatChunk]:
         full = await self.chat(messages, **kwargs)
@@ -60,12 +55,15 @@ class AnthropicProvider(LLMProvider):
 
     async def test_connection(self) -> dict:
         try:
-            async with httpx.AsyncClient(timeout=10) as client:
-                response = await client.get(f"{self.base_url}/models", headers=self._headers())
-                response.raise_for_status()
-            return {"ok": True, "detail": "connection ok"}
+            probe_payload = {
+                "model": self.model,
+                "messages": [{"role": "user", "content": "ping"}],
+                "max_tokens": 1,
+            }
+            await self._request_messages(probe_payload)
+            return {"ok": True, "detail": "messages endpoint ok"}
         except Exception as exc:  # pragma: no cover
-            return {"ok": False, "detail": str(exc)}
+            return {"ok": False, "detail": self._extract_error_detail(exc)}
 
     def _headers(self) -> dict[str, str]:
         headers = {
@@ -172,13 +170,36 @@ class AnthropicProvider(LLMProvider):
 
     async def _request_messages(self, payload: dict[str, Any]) -> dict[str, Any]:
         async with httpx.AsyncClient(timeout=60) as client:
-            response = await client.post(
-                f"{self.base_url}/messages",
-                headers=self._headers(),
-                json=payload,
-            )
-            response.raise_for_status()
-            return response.json()
+            try:
+                response = await client.post(
+                    f"{self.base_url}/messages",
+                    headers=self._headers(),
+                    json=payload,
+                )
+                response.raise_for_status()
+                return response.json()
+            except httpx.HTTPStatusError as exc:
+                response = exc.response
+                detail = ""
+                try:
+                    data = response.json()
+                    if isinstance(data, dict):
+                        if isinstance(data.get("error"), dict):
+                            error_message = data["error"].get("message")
+                            if isinstance(error_message, str) and error_message.strip():
+                                detail = error_message.strip()
+                        elif isinstance(data.get("message"), str) and data["message"].strip():
+                            detail = data["message"].strip()
+                except Exception:
+                    detail = response.text.strip()
+                if not detail:
+                    detail = response.text.strip() or "request failed"
+                raise RuntimeError(f"HTTP {response.status_code}: {detail}") from exc
+
+    @staticmethod
+    def _extract_error_detail(error: Exception) -> str:
+        detail = str(error).strip()
+        return detail or error.__class__.__name__
 
     @staticmethod
     def _parse_messages_response(data: dict[str, Any]) -> dict[str, Any]:

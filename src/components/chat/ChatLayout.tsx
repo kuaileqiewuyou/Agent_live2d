@@ -1,10 +1,11 @@
 import { useState } from 'react'
 import { History, X } from 'lucide-react'
-import { cn } from '@/utils'
+import { cn, createSurfaceTintColor } from '@/utils'
 import type { ChatLayoutMode, Message } from '@/types'
 import { Button } from '@/components/ui/button'
 import { MessageBubble } from '@/components/chat/MessageBubble'
 import { MessageList } from '@/components/chat/MessageList'
+import { useChatAppearanceStore } from '@/stores'
 
 interface ChatLayoutProps {
   layoutMode: ChatLayoutMode
@@ -16,6 +17,7 @@ interface ChatLayoutProps {
 }
 
 function CompanionSpeechBubble({ messages }: { messages: Message[] }) {
+  const bubbleOpacity = useChatAppearanceStore((state) => state.bubbleOpacity)
   const lastAssistant = messages
     .filter((message) => message.role === 'assistant' && message.status !== 'error')
     .at(-1)
@@ -23,20 +25,27 @@ function CompanionSpeechBubble({ messages }: { messages: Message[] }) {
   if (!lastAssistant) return null
 
   const isStreaming = lastAssistant.status === 'streaming'
+  const bubbleStyle = {
+    backgroundColor: createSurfaceTintColor('--color-card', bubbleOpacity),
+  }
 
   return (
     <div className="relative max-w-md shrink-0">
       <div
         className={cn(
-          'max-h-[45vh] overflow-y-auto rounded-2xl border bg-(--color-card) px-5 py-4 text-sm leading-relaxed shadow-lg',
+          'max-h-[45vh] overflow-y-auto rounded-2xl border bg-(--color-card)/80 px-5 py-4 text-sm leading-relaxed shadow-lg backdrop-blur-sm',
           isStreaming ? 'border-(--color-primary)/30' : 'border-(--color-border)',
         )}
+        style={bubbleStyle}
       >
         <div className="prose prose-sm max-w-none break-words dark:prose-invert">
           {lastAssistant.content || '...'}
         </div>
       </div>
-      <div className="absolute -left-2 bottom-4 h-4 w-4 rotate-45 border-b border-l border-(--color-border) bg-(--color-card)" />
+      <div
+        className="absolute -left-2 bottom-4 h-4 w-4 rotate-45 border-b border-l border-(--color-border) bg-(--color-card)/80 backdrop-blur-sm"
+        style={bubbleStyle}
+      />
     </div>
   )
 }

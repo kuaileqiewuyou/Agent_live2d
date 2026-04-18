@@ -43,6 +43,7 @@ class MessageCreateRequest(CamelModel):
     attachments: list[MessageAttachment] = Field(default_factory=list)
     metadata: dict = Field(default_factory=dict)
     manual_tool_requests: list[ManualToolRequest] = Field(default_factory=list)
+    model_config_id: str | None = None
 
 
 class MessageRegenerateRequest(CamelModel):

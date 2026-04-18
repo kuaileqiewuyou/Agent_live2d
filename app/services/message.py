@@ -18,8 +18,10 @@ from app.repositories import (
     LongTermMemoryRepository,
     MemorySummaryRepository,
     MessageRepository,
+    ModelConfigRepository,
 )
 from app.schemas.message import StreamEvent
+from app.services.app_settings import AppSettingsService
 from app.services.memory import MemoryApplicationService
 
 logger = logging.getLogger(__name__)
@@ -284,6 +286,17 @@ def _message_request_id(message) -> str | None:
     return normalized or None
 
 
+def _message_runtime_model_config_id(message) -> str | None:
+    metadata = getattr(message, "metadata_", {}) or {}
+    if not isinstance(metadata, dict):
+        return None
+    value = metadata.get("runtimeModelConfigId") or metadata.get("runtime_model_config_id")
+    if value is None:
+        return None
+    normalized = str(value).strip()
+    return normalized or None
+
+
 def _normalize_content(text: str | None) -> str:
     return (text or "").strip()
 
@@ -464,6 +477,57 @@ def _to_provider_error(error: Exception) -> AppError:
     )
 
 
+def _should_use_provider_fallback(*, state: dict[str, Any], payload: dict[str, Any]) -> bool:
+    metadata = payload.get("metadata")
+    if isinstance(metadata, dict):
+        strict_provider = metadata.get("strict_provider")
+        if not isinstance(strict_provider, bool):
+            strict_provider = metadata.get("strictProvider")
+        if isinstance(strict_provider, bool) and strict_provider:
+            return False
+
+    _ = state  # reserved for future policy branches
+    return True
+
+
+def _summarize_tool_result(item: dict[str, Any], *, max_length: int = 120) -> str:
+    label = _normalize_tool_label(item)
+    detail_raw = str(item.get("summary") or "").strip() or str(item.get("result") or "").strip() or "done"
+    detail = detail_raw.splitlines()[0].strip()
+    if len(detail) > max_length:
+        detail = f"{detail[: max_length - 3]}..."
+    status = "error" if item.get("error") else "ok"
+    return f"- {label} [{status}] {detail}"
+
+
+def _build_provider_fallback_content(
+    *,
+    provider_error: AppError,
+    user_input: str,
+    tool_results: list[dict[str, Any]],
+) -> str:
+    lines = [
+        "Model provider is currently unavailable, so this turn used local fallback.",
+        f"Reason: {provider_error.message}",
+    ]
+
+    if tool_results:
+        lines.append("")
+        lines.append("Tool execution summary:")
+        lines.extend(_summarize_tool_result(item) for item in tool_results[:5] if isinstance(item, dict))
+        if len(tool_results) > 5:
+            lines.append(f"- ... and {len(tool_results) - 5} more tool result(s)")
+
+    normalized_user_input = (user_input or "").strip()
+    if normalized_user_input:
+        lines.append("")
+        lines.append(f"Original request: {normalized_user_input[:280]}")
+
+    lines.append("")
+    lines.append("Please verify provider settings (base URL / API key / model), then retry if needed.")
+    return "\n".join(lines)
+
+
 def _build_stream_event(event: str, data: dict[str, Any]) -> dict[str, Any]:
     payload = dict(data) if isinstance(data, dict) else {}
     live2d_state = _LIVE2D_STATE_BY_EVENT.get(event)
@@ -566,11 +630,55 @@ class MessageService:
         self.session = session
         self.repo = MessageRepository(session)
         self.conversation_repo = ConversationRepository(session)
+        self.model_config_repo = ModelConfigRepository(session)
+        self.app_settings_service = AppSettingsService()
         self.memory_service = MemoryApplicationService(session)
         self.memory_repo = LongTermMemoryRepository(session)
         self.summary_repo = MemorySummaryRepository(session)
         self.graph = AgentOrchestrator()
         self.request_turn_wait_timeout_seconds = request_turn_wait_timeout_seconds
+
+    async def _resolve_effective_model_config(self, conversation, payload: dict[str, Any]):
+        raw_model_config_id = payload.get("model_config_id")
+        if not isinstance(raw_model_config_id, str):
+            return conversation.model_config
+        model_config_id = raw_model_config_id.strip()
+        if not model_config_id:
+            return conversation.model_config
+        return await self.model_config_repo.get(model_config_id, resource_name="model config")
+
+    @staticmethod
+    def _build_runtime_model_metadata(model_config) -> dict[str, str]:
+        return {
+            "runtimeModelConfigId": model_config.id,
+            "runtimeModelName": model_config.name,
+            "runtimeModel": model_config.model,
+        }
+
+    def _attach_runtime_model_metadata(self, metadata: dict[str, Any], model_config) -> dict[str, Any]:
+        normalized = metadata if isinstance(metadata, dict) else {}
+        return {
+            **normalized,
+            **self._build_runtime_model_metadata(model_config),
+        }
+
+    async def _load_runtime_app_settings(self) -> dict[str, Any]:
+        try:
+            settings = await self.app_settings_service.get_settings()
+            return {
+                "file_access_mode": settings.file_access_mode,
+                "file_access_allow_all": settings.file_access_allow_all,
+                "file_access_folders": settings.file_access_folders,
+                "file_access_blacklist": settings.file_access_blacklist,
+            }
+        except Exception as exc:  # pragma: no cover - degrade path
+            logger.warning("failed to load app settings, fallback to compat mode: %s", exc)
+            return {
+                "file_access_mode": "compat",
+                "file_access_allow_all": True,
+                "file_access_folders": [],
+                "file_access_blacklist": [],
+            }
 
     async def _load_long_term_memory_context(self, conversation) -> list[dict[str, str]]:
         conversation_memories = await self.memory_repo.search(
@@ -790,8 +898,11 @@ class MessageService:
     async def send_message(self, conversation_id: str, payload: dict):
         conversation = await self.conversation_repo.get_with_relations(conversation_id)
         self._validate_manual_tool_requests(conversation, payload)
+        runtime_settings = await self._load_runtime_app_settings()
+        effective_model_config = await self._resolve_effective_model_config(conversation, payload)
         request_id = _extract_request_id(payload)
         request_metadata = _attach_request_id(payload.get("metadata", {}), request_id)
+        request_metadata = self._attach_runtime_model_metadata(request_metadata, effective_model_config)
 
         request_turn: RequestTurnLease | None = None
         user_message = None
@@ -824,12 +935,12 @@ class MessageService:
                     "system_prompt_template": conversation.persona.system_prompt_template,
                 },
                 "model_config": {
-                    "provider": conversation.model_config.provider,
-                    "base_url": conversation.model_config.base_url,
-                    "api_key": conversation.model_config.api_key,
-                    "model": conversation.model_config.model,
-                    "tool_call_supported": conversation.model_config.tool_call_supported,
-                    "extra_config": conversation.model_config.extra_config,
+                    "provider": effective_model_config.provider,
+                    "base_url": effective_model_config.base_url,
+                    "api_key": effective_model_config.api_key,
+                    "model": effective_model_config.model,
+                    "tool_call_supported": effective_model_config.tool_call_supported,
+                    "extra_config": effective_model_config.extra_config,
                 },
                 "recent_messages": [
                     {"role": message.role, "content": message.content}
@@ -865,13 +976,19 @@ class MessageService:
                     if server.enabled
                 ],
                 "manual_tool_requests": payload.get("manual_tool_requests", []),
+                "file_access_mode": runtime_settings["file_access_mode"],
+                "file_access_allow_all": runtime_settings["file_access_allow_all"],
+                "file_access_folders": runtime_settings["file_access_folders"],
+                "file_access_blacklist": runtime_settings["file_access_blacklist"],
             }
         )
 
         try:
-            provider = ProviderFactory.from_model_config(conversation.model_config)
+            provider = ProviderFactory.from_model_config(effective_model_config)
             provider_tools = _build_provider_tools(state)
-            use_provider_tools = bool(conversation.model_config.tool_call_supported and provider_tools)
+            use_provider_tools = bool(effective_model_config.tool_call_supported and provider_tools)
+            provider_response: dict[str, Any] | None = None
+            provider_error: AppError | None = None
             try:
                 if use_provider_tools:
                     provider_response = await provider.chat_with_tools(
@@ -880,10 +997,57 @@ class MessageService:
                     )
                 else:
                     provider_response = await provider.chat(state["prompt_messages"])
-            except AppError:
-                raise
+            except AppError as error:
+                provider_error = error
             except Exception as error:
-                raise _to_provider_error(error) from error
+                provider_error = _to_provider_error(error)
+
+            if provider_error is not None:
+                if (
+                    provider_error.code == "provider_error"
+                    and _should_use_provider_fallback(state=state, payload=payload)
+                ):
+                    tool_results = state.get("tool_results", [])
+                    fallback_content = _build_provider_fallback_content(
+                        provider_error=provider_error,
+                        user_input=payload["content"],
+                        tool_results=tool_results if isinstance(tool_results, list) else [],
+                    )
+                    assistant_metadata = _build_assistant_metadata(
+                        planner_output=state.get("planner_output", {}),
+                        tool_results=tool_results if isinstance(tool_results, list) else [],
+                        manual_tool_requests=payload.get("manual_tool_requests", []),
+                        provider_tool_calls=[],
+                    )
+                    assistant_metadata = _attach_request_id(assistant_metadata, request_id)
+                    assistant_metadata = self._attach_runtime_model_metadata(assistant_metadata, effective_model_config)
+                    assistant_metadata["providerFallback"] = {
+                        "used": True,
+                        "code": provider_error.code,
+                        "detail": provider_error.message,
+                    }
+                    assistant_message = await self.repo.create(
+                        {
+                            "conversation_id": conversation_id,
+                            "role": "assistant",
+                            "sender_type": "assistant",
+                            "sender_name": conversation.persona.name,
+                            "agent_name": "CompanionAgent",
+                            "content": fallback_content,
+                            "metadata_": assistant_metadata,
+                        }
+                    )
+                    await self._sync_memory_after_turn(
+                        conversation=conversation,
+                        conversation_id=conversation_id,
+                        user_input=payload["content"],
+                    )
+                    await self.session.commit()
+                    return user_message, assistant_message
+                raise provider_error
+
+            if not isinstance(provider_response, dict):
+                raise _to_provider_error(RuntimeError("provider response is not a JSON object"))
             assistant_metadata = _build_assistant_metadata(
                 planner_output=state.get("planner_output", {}),
                 tool_results=state.get("tool_results", []),
@@ -891,6 +1055,7 @@ class MessageService:
                 provider_tool_calls=provider_response.get("tool_calls", []),
             )
             assistant_metadata = _attach_request_id(assistant_metadata, request_id)
+            assistant_metadata = self._attach_runtime_model_metadata(assistant_metadata, effective_model_config)
             assistant_message = await self.repo.create(
                 {
                     "conversation_id": conversation_id,
@@ -915,7 +1080,7 @@ class MessageService:
                 await generation_coordinator.release_request_turn(request_turn)
 
     async def regenerate(self, conversation_id: str):
-        await self.conversation_repo.get_with_relations(conversation_id)
+        conversation = await self.conversation_repo.get_with_relations(conversation_id)
         messages = await self.repo.list_by_conversation(conversation_id)
         last_user = next((message for message in reversed(messages) if message.role == "user"), None)
         if last_user is None:
@@ -924,13 +1089,28 @@ class MessageService:
                 status_code=HTTPStatus.CONFLICT,
                 code="regenerate_not_available",
             )
+        payload: dict[str, Any] = {
+            "content": last_user.content,
+            "attachments": last_user.attachments,
+            "metadata": {"regenerated": True},
+        }
+        runtime_model_config_id = _message_runtime_model_config_id(last_user)
+        if runtime_model_config_id:
+            try:
+                await self.model_config_repo.get(runtime_model_config_id, resource_name="model config")
+                payload["model_config_id"] = runtime_model_config_id
+            except AppError as error:
+                if error.code != "not_found":
+                    raise
+                logger.info(
+                    "regenerate fallback to conversation model config: runtime model %s not found (conversation=%s, default=%s)",
+                    runtime_model_config_id,
+                    conversation_id,
+                    conversation.model_config_id,
+                )
         return await self.send_message(
             conversation_id,
-            {
-                "content": last_user.content,
-                "attachments": last_user.attachments,
-                "metadata": {"regenerated": True},
-            },
+            payload,
         )
 
     async def stop_generation(self, conversation_id: str) -> dict:
@@ -941,8 +1121,11 @@ class MessageService:
     async def stream_message(self, conversation_id: str, payload: dict) -> AsyncIterator[dict]:
         conversation = await self.conversation_repo.get_with_relations(conversation_id)
         self._validate_manual_tool_requests(conversation, payload)
+        runtime_settings = await self._load_runtime_app_settings()
+        effective_model_config = await self._resolve_effective_model_config(conversation, payload)
         request_id = _extract_request_id(payload)
         request_metadata = _attach_request_id(payload.get("metadata", {}), request_id)
+        request_metadata = self._attach_runtime_model_metadata(request_metadata, effective_model_config)
 
         request_turn: RequestTurnLease | None = None
         user_message = None
@@ -991,12 +1174,12 @@ class MessageService:
                         "system_prompt_template": conversation.persona.system_prompt_template,
                     },
                     "model_config": {
-                        "provider": conversation.model_config.provider,
-                        "base_url": conversation.model_config.base_url,
-                        "api_key": conversation.model_config.api_key,
-                        "model": conversation.model_config.model,
-                        "tool_call_supported": conversation.model_config.tool_call_supported,
-                        "extra_config": conversation.model_config.extra_config,
+                        "provider": effective_model_config.provider,
+                        "base_url": effective_model_config.base_url,
+                        "api_key": effective_model_config.api_key,
+                        "model": effective_model_config.model,
+                        "tool_call_supported": effective_model_config.tool_call_supported,
+                        "extra_config": effective_model_config.extra_config,
                     },
                     "recent_messages": [
                         {"role": message.role, "content": message.content}
@@ -1029,6 +1212,10 @@ class MessageService:
                         if server.enabled
                     ],
                     "manual_tool_requests": payload.get("manual_tool_requests", []),
+                    "file_access_mode": runtime_settings["file_access_mode"],
+                    "file_access_allow_all": runtime_settings["file_access_allow_all"],
+                    "file_access_folders": runtime_settings["file_access_folders"],
+                    "file_access_blacklist": runtime_settings["file_access_blacklist"],
                 }
             )
 
@@ -1038,9 +1225,9 @@ class MessageService:
                 if event_name:
                     yield _build_stream_event(event_name, event_data if isinstance(event_data, dict) else {})
 
-            provider = ProviderFactory.from_model_config(conversation.model_config)
+            provider = ProviderFactory.from_model_config(effective_model_config)
             provider_tools = _build_provider_tools(prepared)
-            use_provider_tools = bool(conversation.model_config.tool_call_supported and provider_tools)
+            use_provider_tools = bool(effective_model_config.tool_call_supported and provider_tools)
             chunks: list[str] = []
             provider_tool_calls: list[dict] = []
             assistant_metadata = _build_assistant_metadata(
@@ -1050,6 +1237,7 @@ class MessageService:
                 provider_tool_calls=provider_tool_calls,
             )
             assistant_metadata = _attach_request_id(assistant_metadata, request_id)
+            assistant_metadata = self._attach_runtime_model_metadata(assistant_metadata, effective_model_config)
             try:
                 stream_iterator = (
                     provider.stream_chat_with_tools(
@@ -1071,10 +1259,62 @@ class MessageService:
                     if token:
                         chunks.append(token)
                         yield _build_stream_event("token", {"content": token})
-            except AppError:
-                raise
+            except AppError as error:
+                provider_error = error
             except Exception as error:
-                raise _to_provider_error(error) from error
+                provider_error = _to_provider_error(error)
+            else:
+                provider_error = None
+
+            if provider_error is not None:
+                if (
+                    provider_error.code == "provider_error"
+                    and _should_use_provider_fallback(state=prepared, payload=payload)
+                ):
+                    tool_results = prepared.get("tool_results", [])
+                    fallback_content = _build_provider_fallback_content(
+                        provider_error=provider_error,
+                        user_input=payload["content"],
+                        tool_results=tool_results if isinstance(tool_results, list) else [],
+                    )
+                    partial_content = "".join(chunks).strip()
+                    if partial_content:
+                        fallback_content = f"{partial_content}\n\n{fallback_content}"
+
+                    assistant_metadata["providerToolCalls"] = provider_tool_calls
+                    assistant_metadata["providerFallback"] = {
+                        "used": True,
+                        "code": provider_error.code,
+                        "detail": provider_error.message,
+                    }
+                    assistant_message = await self.repo.create(
+                        {
+                            "conversation_id": conversation_id,
+                            "role": "assistant",
+                            "sender_type": "assistant",
+                            "sender_name": conversation.persona.name,
+                            "agent_name": "CompanionAgent",
+                            "content": fallback_content,
+                            "metadata_": assistant_metadata,
+                        }
+                    )
+                    await self._sync_memory_after_turn(
+                        conversation=conversation,
+                        conversation_id=conversation_id,
+                        user_input=payload["content"],
+                    )
+                    await self.session.commit()
+                    yield _build_stream_event(
+                        "final_answer",
+                        {
+                            "messageId": assistant_message.id,
+                            "content": assistant_message.content,
+                            "toolUsage": assistant_metadata["toolUsage"],
+                            "manualToolRequests": assistant_metadata["manualToolRequests"],
+                        },
+                    )
+                    return
+                raise provider_error
 
             assistant_metadata["providerToolCalls"] = provider_tool_calls
 

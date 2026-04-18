@@ -1,5 +1,7 @@
 # Phase 2 Tool Panel Validation Checklist
 
+> **For agentic workers:** REQUIRED PROCESS: Follow the mandatory superpower-plus flow in order: `brainstorming -> writing-acceptance-criteria -> writing-plans -> executing-plans`. Do not implement changes before the flow is completed.
+
 ## Goal
 Validate the tool-panel flow end-to-end before stage closure, with emphasis on manual tool triggering, fallback behavior, and per-conversation draft recovery.
 

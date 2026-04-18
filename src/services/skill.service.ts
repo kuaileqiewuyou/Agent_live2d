@@ -53,8 +53,19 @@ async function toggleSkill(id: string, enabled: boolean): Promise<Skill> {
   return normalizeSkill(res.data)
 }
 
+async function deleteSkill(id: string): Promise<void> {
+  if (isMockMode()) {
+    skills = skills.filter((s) => s.id !== id)
+    return
+  }
+  await apiRequest<{ deleted: boolean, id: string }>(`/api/skills/${id}`, {
+    method: 'DELETE',
+  })
+}
+
 export const skillService = {
   getSkills,
   getSkill,
   toggleSkill,
+  deleteSkill,
 }

@@ -198,9 +198,14 @@
   "metadata": {
     "requestId": "req-001"
   },
-  "manualToolRequests": []
+  "manualToolRequests": [],
+  "modelConfigId": "uuid"
 }
 ```
+
+说明：
+- `modelConfigId` 为可选字段，仅覆盖“本次消息请求”使用的模型，不会改写 `Conversation.modelConfigId`
+- 若未传 `modelConfigId`，后端使用会话默认模型配置
 
 响应体：
 
@@ -253,6 +258,8 @@ data: {"messageId":"uuid","content":"你好，我在。","toolUsage":{"totalCoun
 
 ### `POST /api/conversations/{conversationId}/messages/regenerate`
 - 基于最近一条 user 消息重新生成 assistant 回复
+- regenerate 会优先复用最近一条 user 消息 `metadata.runtimeModelConfigId` 对应的模型
+- 若该模型已失效/不存在，自动回退到 `Conversation.modelConfigId`
 
 ### `POST /api/conversations/{conversationId}/messages/stop`
 
@@ -477,6 +484,7 @@ data: {"messageId":"uuid","content":"你好，我在。","toolUsage":{"totalCoun
 - `PATCH /api/mcp/servers/{serverId}`
 - `DELETE /api/mcp/servers/{serverId}`
 - `POST /api/mcp/servers/{serverId}/check`
+- `POST /api/mcp/servers/{serverId}/smoke`
 - `GET /api/mcp/servers/{serverId}/capabilities`
 
 `POST /check` 响应：
@@ -497,11 +505,72 @@ data: {"messageId":"uuid","content":"你好，我在。","toolUsage":{"totalCoun
 }
 ```
 
+### `POST /api/mcp/servers/{serverId}/smoke`
+
+请求体（可选）：
+
+```json
+{
+  "toolName": "echo",
+  "toolArguments": {}
+}
+```
+
+说明：
+- 用于“一键验收”真实可调用链路，按 `initialize -> tools/list -> tools/call` 顺序执行。
+- 未指定 `toolName` 时，默认选择首个可用工具并传空参数 `{}`。
+- 若 `tools/list` 为空，返回失败并标记 `server has no tool`。
+- `tools/call` 与聊天主链路共享 FileAccessGuard；命中本地路径门控会返回 `forbidden_path`。
+- `steps[*].details` 可能附带 runtime 诊断字段：`sessionReuse`、`sessionRecreated`（用于排查连接抖动）。
+
+响应示例：
+
+```json
+{
+  "success": true,
+  "data": {
+    "ok": false,
+    "status": "error",
+    "usedToolName": "read_file",
+    "summary": "forbidden_path: D:/secret.txt",
+    "steps": [
+      {
+        "name": "initialize",
+        "ok": true,
+        "status": "passed",
+        "detail": "mcp rpc reachable (1 tools)"
+      },
+      {
+        "name": "tools/list",
+        "ok": true,
+        "status": "passed",
+        "detail": "found 1 tool(s)"
+      },
+      {
+        "name": "tools/call",
+        "ok": false,
+        "status": "failed",
+        "detail": "forbidden_path: D:/secret.txt",
+        "errorCategory": "permission",
+        "details": {
+          "path": "D:/secret.txt",
+          "reason": "not_in_allowlist"
+        }
+      }
+    ]
+  },
+  "message": null
+}
+```
+
+`errorCategory` 取值：`config | auth | permission | server | runtime`
+
 ## 8. Memory
 
 接口：
 - `GET /api/memory/long-term`
 - `POST /api/memory/long-term`
+- `DELETE /api/memory/long-term/{memoryId}`
 - `POST /api/memory/search`
 - `POST /api/memory/summarize`
 
@@ -542,6 +611,19 @@ data: {"messageId":"uuid","content":"你好，我在。","toolUsage":{"totalCoun
 }
 ```
 
+### `DELETE /api/memory/long-term/{memoryId}` 响应
+
+```json
+{
+  "success": true,
+  "data": {
+    "deleted": true,
+    "id": "uuid"
+  },
+  "message": null
+}
+```
+
 ## 9. Settings
 
 接口：
@@ -557,9 +639,21 @@ Settings 对象：
   "backgroundBlur": 0,
   "backgroundOverlayOpacity": 0.5,
   "defaultLayoutMode": "chat",
-  "language": "zh-CN"
+  "language": "zh-CN",
+  "fileAccessMode": "compat",
+  "fileAccessAllowAll": true,
+  "fileAccessFolders": [],
+  "fileAccessBlacklist": []
 }
 ```
+
+`fileAccessMode` 行为约定：
+- 当前固定为 `compat`
+- 本地路径访问优先级：`fileAccessBlacklist` > `fileAccessAllowAll` > `fileAccessFolders`
+- `fileAccessAllowAll=true` 时，允许访问本地路径（但黑名单仍会拦截）
+- `fileAccessAllowAll=false` 时，仅允许访问 `fileAccessFolders` 及其子目录
+- 该白名单会同时用于 Live2D 本地文件校验与 MCP 本地路径调用门控
+- `forbidden_path` 错误会返回结构化字段：`path`、`reason`、`context`、`suggestedFolder`
 
 ## 10. Meta
 
@@ -599,6 +693,7 @@ Settings 对象：
 - `conflict`
 - `validation_error`
 - `provider_error`
+- `forbidden_path`
 - `request_in_progress`
 - `regenerate_not_available`
 - `internal_error`
@@ -637,3 +732,167 @@ Settings 对象：
 - 推荐前端行为：
   - 同一轮用户发送固定使用同一个 `requestId`
   - `stream` 回退到非 `stream` 发送时复用该 `requestId`
+
+## 13. Ops MCP Installer（项目内安装）
+
+边界：
+- 仅安装到当前项目内 MCP Servers（`/api/mcp/servers`），不写系统级 MCP 客户端配置
+- 支持输入：URL、JSON 配置片段、GitHub 链接
+- 执行模式：逐步确认（step-by-step）
+
+GitHub 链接解析规则（`preview`）：
+- 优先从 README 的 JSON/JSONC 代码块提取 MCP 配置（`mcpServers` 或单服务对象）
+- 若未命中配置对象，则尝试提取命令行（支持 fenced code / inline code / shell 行），并拆分为：
+  - `parsedConfig.endpointOrCommand`（命令本体，如 `npx`）
+  - `parsedConfig.advancedConfig.args[]`（命令参数）
+- 若命令行也未命中，再尝试提取 README 中的 HTTP endpoint
+- 上述都失败时返回 `github_readme_parse_failed`
+
+### `POST /api/ops/mcp/install/preview`
+
+请求体：
+
+```json
+{
+  "link": "https://github.com/modelcontextprotocol/servers",
+  "conversationId": "optional-conversation-id"
+}
+```
+
+响应体（`data.session`）核心字段：
+- `id`
+- `status`（`previewed/running/failed/completed`）
+- `parsedConfig`（`sourceType/name/transportType/endpointOrCommand/advancedConfig`）
+- `envReport[]`（`command/available/path/version/detail`）
+- `steps[]`（`id/name/title/status/requiresConfirm/detail/result/errorCategory/startedAt/finishedAt`）
+
+错误码约定：
+- `validation_error`（缺少 `link`，HTTP 422）
+- `invalid_snippet`（JSON 片段语法/结构非法，HTTP 422）
+- `invalid_link`（链接格式不支持，HTTP 422）
+- `github_readme_unavailable`（GitHub README 拉取失败，HTTP 502）
+- `github_readme_parse_failed`（README 可读但未识别到可安装 MCP 配置，HTTP 422）
+
+前端兼容映射（非后端原始错误码）：
+- 当路由级 `404 not_found` 且不属于“session/step not found”语义时，前端可映射为 `endpoint_not_available`，提示“后端未加载 MCP 安装接口能力”
+
+### `POST /api/ops/mcp/install/execute`
+
+请求体：
+
+```json
+{
+  "sessionId": "install-session-id",
+  "stepId": "create_or_update_server"
+}
+```
+
+`stepId`（当前版本）：
+- `create_or_update_server`
+- `check_server`
+- `smoke_server`
+- `enable_server`
+
+说明：
+- 会话中的完整步骤链为：`parse_link -> probe_env -> create_or_update_server -> check_server -> smoke_server -> enable_server`
+- 其中 `parse_link` 与 `probe_env` 在 `preview` 阶段已自动完成（`requiresConfirm=false`），`execute` 仅接受后 4 个可执行步骤
+
+响应体：
+
+```json
+{
+  "success": true,
+  "data": {
+    "session": {},
+    "step": {}
+  },
+  "message": null
+}
+```
+
+说明：
+- 未完成前置步骤时返回 `409 conflict`
+- 步骤失败时返回统一错误结构，且对应步骤会写入 `step.errorCategory`
+
+错误码约定：
+- `validation_error`（参数缺失或 step 非法，HTTP 400/422）
+- `not_found`（session 或 step 不存在，HTTP 404）
+- `conflict`（前置步骤未完成 / 步骤正在运行 / 服务未创建，HTTP 409）
+- `check_failed`（`check_server` 失败，HTTP 502）
+- `smoke_failed`（`smoke_server` 失败，HTTP 502）
+- `runtime_error`（非预期运行时错误，HTTP 502）
+
+`step.errorCategory` 语义：
+- 成功步骤：`null`
+- 失败步骤：与该次失败对应的错误码一致（例如 `check_failed`、`smoke_failed`、`runtime_error`）
+
+### `GET /api/ops/mcp/install/{sessionId}`
+
+返回当前安装会话状态（用于前端断线恢复与刷新）。
+
+### Stream 事件扩展（聊天 SSE）
+
+在 `POST /api/conversations/{conversationId}/messages/stream` 中新增事件：
+- `ops_install_preview`
+- `ops_install_step_started`
+- `ops_install_step_finished`
+- `ops_install_finished`
+
+这些事件仅用于 Ops Assistant 的安装流程展示，不改变 `final_answer/stopped` 终态语义。
+
+## 14. Ops Commands（项目内命令执行）
+
+边界：
+- 仅允许项目作用域执行（`cwd` 必须在项目根目录内）
+- 命令白名单执行（如 `npm/python/pytest/git/docker/...`）
+- 高危关键词默认阻断（例如 `rm -rf`）
+- 强制预执行确认：`preview -> execute`
+
+### `POST /api/ops/commands/preview`
+
+请求体：
+
+```json
+{
+  "command": "python --version",
+  "cwd": "optional-working-directory",
+  "conversationId": "optional-conversation-id"
+}
+```
+
+响应体（`data.session`）：
+- `status = previewed`
+- `preview.command`
+- `preview.argv`
+- `preview.cwd`
+- `preview.riskLevel`（`low/medium/high`）
+- `preview.requiresConfirm = true`
+
+### `POST /api/ops/commands/execute`
+
+请求体：
+
+```json
+{
+  "sessionId": "command-session-id"
+}
+```
+
+响应体（`data.session`）：
+- `status`（`completed/failed`）
+- `result.exitCode`
+- `result.stdout`
+- `result.stderr`
+- `result.durationMs`
+
+### `GET /api/ops/commands/{sessionId}`
+
+查询命令会话当前状态（用于刷新与断线恢复）。
+
+### Stream 事件扩展（聊天 SSE）
+
+在 `POST /api/conversations/{conversationId}/messages/stream` 中新增事件：
+- `ops_command_preview`
+- `ops_command_finished`
+
+这些事件用于 Ops Assistant 的命令执行预览卡片展示，不改变 `final_answer/stopped` 终态语义。

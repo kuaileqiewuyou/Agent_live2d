@@ -34,3 +34,8 @@ export interface MemorySummaryResult {
   summary: string
   sourceMessageCount: number
 }
+
+export interface MemoryDeleteResult {
+  deleted: boolean
+  id: string
+}

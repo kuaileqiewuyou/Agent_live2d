@@ -1,18 +1,35 @@
 from datetime import datetime, timezone
 
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.mcp import MCPClientManager
+from app.db.models import MCPServer
+from app.mcp import get_mcp_client_manager
+from app.mcp.client import MCPClientManager  # noqa: F401 - backward-compatible test patch target
+from app.services.app_settings import AppSettingsService
 from app.repositories import MCPServerRepository
 
 
 class MCPServerService:
+    _BUILTIN_CHROME_DEVTOOLS_NAME = "chrome-devtools"
+    _BUILTIN_CHROME_DEVTOOLS_PAYLOAD = {
+        "name": _BUILTIN_CHROME_DEVTOOLS_NAME,
+        "description": "Built-in Chrome DevTools MCP server for browser inspection and automation",
+        "transport_type": "stdio",
+        "endpoint_or_command": "npx",
+        "enabled": False,
+        "advanced_config": {
+            "args": ["-y", "chrome-devtools-mcp@latest"],
+        },
+    }
+
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
         self.repo = MCPServerRepository(session)
-        self.client_manager = MCPClientManager()
 
     async def list_servers(self):
+        await self._ensure_builtin_chrome_devtools_server()
         return await self.repo.list()
 
     async def create_server(self, payload: dict):
@@ -162,7 +179,8 @@ class MCPServerService:
     async def check_server(self, server_id: str):
         server = await self.get_server(server_id)
         cached = self._normalize_capabilities(server.capabilities)
-        inspection = await self.client_manager.inspect_server(
+        client_manager = get_mcp_client_manager()
+        inspection = await client_manager.inspect_server(
             transport_type=server.transport_type,
             endpoint_or_command=server.endpoint_or_command,
             config=cached.get("config"),
@@ -245,3 +263,36 @@ class MCPServerService:
         capabilities["status"] = server.status
         capabilities["lastCheckedAt"] = self._to_iso(server.last_checked_at)
         return capabilities
+
+    async def smoke_server(self, server_id: str, payload: dict | None = None) -> dict:
+        server = await self.get_server(server_id)
+        cached = self._normalize_capabilities(server.capabilities)
+        body = payload if isinstance(payload, dict) else {}
+        tool_name = body.get("tool_name")
+        tool_arguments = body.get("tool_arguments")
+
+        runtime_settings = await AppSettingsService().get_settings()
+        client_manager = get_mcp_client_manager()
+        result = await client_manager.smoke_server(
+            transport_type=server.transport_type,
+            endpoint_or_command=server.endpoint_or_command,
+            tool_name=tool_name if isinstance(tool_name, str) else None,
+            tool_arguments=tool_arguments if isinstance(tool_arguments, dict) else None,
+            config=cached.get("config"),
+            file_access_allow_all=runtime_settings.file_access_allow_all,
+            file_access_folders=runtime_settings.file_access_folders,
+            file_access_blacklist=runtime_settings.file_access_blacklist,
+        )
+        return result
+
+    async def _ensure_builtin_chrome_devtools_server(self) -> None:
+        existing_id = await self.session.scalar(
+            select(MCPServer.id).where(MCPServer.name == self._BUILTIN_CHROME_DEVTOOLS_NAME)
+        )
+        if existing_id:
+            return
+        try:
+            await self.create_server(dict(self._BUILTIN_CHROME_DEVTOOLS_PAYLOAD))
+        except IntegrityError:
+            # Another concurrent request created it first.
+            await self.session.rollback()

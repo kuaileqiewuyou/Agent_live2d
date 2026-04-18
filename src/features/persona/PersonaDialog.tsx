@@ -1,11 +1,13 @@
-﻿import { useCallback, useEffect, useRef, useState } from 'react'
+﻿import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { KeyboardEvent } from 'react'
 import { useForm, Controller } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
-import { ImagePlus, Trash2, Upload, X } from 'lucide-react'
-import type { ChatLayoutMode, Persona } from '@/types'
+import { CircleAlert, CircleCheck, Loader2, ImagePlus, Trash2, Upload, X } from 'lucide-react'
+import { useNavigate } from 'react-router-dom'
+import type { ChatLayoutMode, Live2DModel, Persona } from '@/types'
 import { LAYOUT_MODE_LABELS } from '@/constants'
+import { validateLive2DModelPath } from '@/utils/live2d-file'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -46,11 +48,18 @@ const personaSchema = z.object({
 })
 
 type PersonaFormValues = z.infer<typeof personaSchema>
+type ModelAvailabilityStatus = 'checking' | 'available' | 'warning' | 'error'
+
+interface ModelAvailability {
+  status: ModelAvailabilityStatus
+  message?: string
+}
 
 interface PersonaDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   persona?: Persona | null
+  live2dModels?: Live2DModel[]
   onSubmit: (data: Omit<Persona, 'id' | 'createdAt' | 'updatedAt'>) => Promise<void>
 }
 
@@ -92,8 +101,10 @@ export function PersonaDialog({
   open,
   onOpenChange,
   persona,
+  live2dModels = [],
   onSubmit,
 }: PersonaDialogProps) {
+  const navigate = useNavigate()
   const isEditing = !!persona
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [cropSource, setCropSource] = useState<string | null>(null)
@@ -112,9 +123,44 @@ export function PersonaDialog({
   })
 
   const [tagInput, setTagInput] = useState('')
+  const [modelAvailability, setModelAvailability] = useState<Record<string, ModelAvailability>>({})
   const avatarUrl = watch('avatar')
   const nameValue = watch('name')
   const tags = watch('personalityTags')
+
+  const getModelDisplayName = useCallback((path: string): string => {
+    const model = live2dModels.find(item => item.path === path)
+    if (model) return model.name
+    const segments = path.replace(/\\/g, '/').split('/')
+    const fileName = segments[segments.length - 1] || path
+    return fileName.replace(/\.model3\.json$/i, '') || fileName
+  }, [live2dModels])
+
+  const getStatusRank = useCallback((path: string): number => {
+    const status = modelAvailability[path]?.status
+    switch (status) {
+      case 'available':
+        return 0
+      case 'checking':
+        return 1
+      case 'warning':
+        return 2
+      case 'error':
+        return 3
+      default:
+        return 1
+    }
+  }, [modelAvailability])
+
+  const orderedModels = useMemo(
+    () =>
+      [...live2dModels].sort((a, b) => {
+        const rankDiff = getStatusRank(a.path) - getStatusRank(b.path)
+        if (rankDiff !== 0) return rankDiff
+        return a.name.localeCompare(b.name, 'zh-Hans-CN')
+      }),
+    [getStatusRank, live2dModels],
+  )
 
   useEffect(() => {
     if (!open) {
@@ -124,6 +170,88 @@ export function PersonaDialog({
     reset(toFormValues(persona))
     setTagInput('')
   }, [open, persona, reset])
+
+  useEffect(() => {
+    if (!open) {
+      setModelAvailability({})
+      return
+    }
+    if (live2dModels.length === 0) {
+      setModelAvailability({})
+      return
+    }
+
+    let cancelled = false
+    setModelAvailability(
+      Object.fromEntries(
+        live2dModels.map(model => [model.path, { status: 'checking' as const }]),
+      ),
+    )
+
+    ;(async () => {
+      for (const model of live2dModels) {
+        if (cancelled) return
+        const result = await validateLive2DModelPath(model.path)
+        if (cancelled) return
+
+        const next: ModelAvailability = result.valid
+          ? result.warnings.length > 0
+            ? { status: 'warning', message: result.warnings[0] }
+            : { status: 'available' }
+          : { status: 'error', message: result.message || '模型不可用' }
+
+        setModelAvailability(prev => ({
+          ...prev,
+          [model.path]: next,
+        }))
+      }
+    })()
+
+    return () => {
+      cancelled = true
+    }
+  }, [live2dModels, open])
+
+  const getAvailabilityMeta = useCallback((path: string | undefined) => {
+    if (!path) return null
+    const item = modelAvailability[path]
+    if (!item) return null
+    switch (item.status) {
+      case 'checking':
+        return {
+          status: 'checking' as const,
+          label: '检查中',
+          className: 'text-blue-600',
+          icon: <Loader2 className="h-3.5 w-3.5 animate-spin" />,
+          message: item.message,
+        }
+      case 'available':
+        return {
+          status: 'available' as const,
+          label: '可用',
+          className: 'text-emerald-600',
+          icon: <CircleCheck className="h-3.5 w-3.5" />,
+          message: item.message,
+        }
+      case 'warning':
+        return {
+          status: 'warning' as const,
+          label: '可用（有提示）',
+          className: 'text-amber-600',
+          icon: <CircleAlert className="h-3.5 w-3.5" />,
+          message: item.message,
+        }
+      case 'error':
+      default:
+        return {
+          status: 'error' as const,
+          label: '不可用',
+          className: 'text-red-600',
+          icon: <CircleAlert className="h-3.5 w-3.5" />,
+          message: item.message,
+        }
+    }
+  }, [modelAvailability])
 
   const handleTagKeyDown = useCallback(
     (event: KeyboardEvent<HTMLInputElement>) => {
@@ -179,6 +307,12 @@ export function PersonaDialog({
   const handleRemoveAvatar = useCallback(() => {
     setValue('avatar', '', { shouldDirty: true })
   }, [setValue])
+
+  const handleOpenLive2DManager = useCallback((focusPath?: string) => {
+    const query = focusPath ? `?focus=${encodeURIComponent(focusPath)}` : ''
+    onOpenChange(false)
+    navigate(`/live2d${query}`)
+  }, [navigate, onOpenChange])
 
   const onFormSubmit = async (data: PersonaFormValues) => {
     await onSubmit({
@@ -332,16 +466,107 @@ export function PersonaDialog({
                 <Controller
                   name="live2dModel"
                   control={control}
-                  render={({ field }) => (
-                    <Select value={field.value || 'none'} onValueChange={value => field.onChange(value === 'none' ? '' : value)}>
-                      <SelectTrigger>
-                        <SelectValue placeholder="选择 Live2D 模型（可选）" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="none">无</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  )}
+                  render={({ field }) => {
+                    const currentPath = field.value || ''
+                    const hasCurrentInLibrary = !currentPath
+                      || live2dModels.some(model => model.path === currentPath)
+                    const selectedName = currentPath ? getModelDisplayName(currentPath) : ''
+                    const selectedAvailability = getAvailabilityMeta(currentPath)
+
+                    return (
+                      <div className="space-y-2">
+                        <Select
+                          value={currentPath || 'none'}
+                          onValueChange={(value) => {
+                            field.onChange(value === 'none' ? '' : value)
+                          }}
+                        >
+                          <SelectTrigger>
+                            <SelectValue placeholder="选择 Live2D 模型（可选）" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="none">无</SelectItem>
+                            {orderedModels.map((model) => {
+                              const meta = getAvailabilityMeta(model.path)
+                              const reason = meta?.message
+                                ? meta.message.slice(0, 42) + (meta.message.length > 42 ? '…' : '')
+                                : ''
+
+                              return (
+                                <SelectItem key={model.id} value={model.path}>
+                                  <div className="flex min-w-0 flex-col">
+                                    <span className="flex items-center gap-1.5">
+                                      <span className="truncate">{model.name}</span>
+                                      {meta && (
+                                        <span className={`inline-flex items-center gap-1 text-[11px] ${meta.className}`}>
+                                          {meta.icon}
+                                          {meta.label}
+                                        </span>
+                                      )}
+                                    </span>
+                                    {(meta?.status === 'warning' || meta?.status === 'error') && reason && (
+                                      <span className={`mt-0.5 truncate text-[11px] ${meta.className}`} title={meta.message}>
+                                        {reason}
+                                      </span>
+                                    )}
+                                  </div>
+                                </SelectItem>
+                              )
+                            })}
+                            {!hasCurrentInLibrary && (
+                              <SelectItem value={currentPath}>
+                                当前值（未在模型库）: {currentPath}
+                              </SelectItem>
+                            )}
+                          </SelectContent>
+                        </Select>
+                        {live2dModels.length === 0 && (
+                          <p className="text-xs text-(--color-muted-foreground)">
+                            暂无已导入模型，请先前往「Live2D 模型管理」页面导入。
+                          </p>
+                        )}
+                        {currentPath && (
+                          <div className="rounded-md border border-(--color-border) bg-(--color-muted)/20 p-2 text-xs">
+                            <div className="font-medium text-(--color-foreground)">
+                              当前绑定：{selectedName}
+                            </div>
+                            {selectedAvailability && (
+                              <div className={`mt-1 inline-flex items-center gap-1 ${selectedAvailability.className}`}>
+                                {selectedAvailability.icon}
+                                <span>{selectedAvailability.label}</span>
+                              </div>
+                            )}
+                            <div className="mt-1 break-all text-(--color-muted-foreground)">
+                              {currentPath}
+                            </div>
+                            {selectedAvailability?.message && (
+                              <div className={`mt-1 ${selectedAvailability.className}`}>
+                                {selectedAvailability.message}
+                              </div>
+                            )}
+                            {!hasCurrentInLibrary && (
+                              <div className="mt-1 text-amber-600">
+                                该路径来自历史配置，未在模型库中登记。建议在「Live2D 模型管理」重新导入。
+                              </div>
+                            )}
+                            {(selectedAvailability?.status === 'warning'
+                              || selectedAvailability?.status === 'error'
+                              || !hasCurrentInLibrary) && (
+                              <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                className="mt-2"
+                                onClick={() => handleOpenLive2DManager(currentPath)}
+                              >
+                                去模型管理定位
+                              </Button>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    )
+                  }}
                 />
               </div>
 
@@ -389,3 +614,5 @@ export function PersonaDialog({
     </>
   )
 }
+
+

@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { Plus, Users } from 'lucide-react'
 import type { Conversation, Persona } from '@/types'
 import { conversationService, personaService } from '@/services'
-import { useNotificationStore } from '@/stores'
+import { useNotificationStore, useSettingsStore } from '@/stores'
 import { Button } from '@/components/ui/button'
 import { PersonaCard } from '@/features/persona/PersonaCard'
 import { PersonaDialog } from '@/features/persona/PersonaDialog'
@@ -73,6 +73,7 @@ export function PersonaPage() {
   const [editingPersona, setEditingPersona] = useState<Persona | null>(null)
   const [deletingPersonaId, setDeletingPersonaId] = useState<string | null>(null)
   const pushNotification = useNotificationStore((state) => state.push)
+  const live2dModels = useSettingsStore((state) => state.settings.live2dModels || [])
 
   const loadPersonas = useCallback(async () => {
     try {
@@ -270,6 +271,7 @@ export function PersonaPage() {
         open={dialogOpen}
         onOpenChange={setDialogOpen}
         persona={editingPersona}
+        live2dModels={live2dModels}
         onSubmit={handleSubmit}
       />
     </div>

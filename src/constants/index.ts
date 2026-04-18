@@ -17,16 +17,16 @@ export const TERMS = {
 
 export const PROVIDER_LABELS: Record<ProviderType, string> = {
   'openai-compatible': 'OpenAI 兼容',
-  'anthropic': 'Anthropic',
-  'gemini': 'Gemini',
-  'ollama': 'Ollama',
+  anthropic: 'Anthropic',
+  gemini: 'Gemini',
+  ollama: 'Ollama',
 }
 
 export const PROVIDER_DEFAULT_URLS: Record<ProviderType, string> = {
   'openai-compatible': 'https://api.openai.com/v1',
-  'anthropic': 'https://api.anthropic.com',
-  'gemini': 'https://generativelanguage.googleapis.com',
-  'ollama': 'http://localhost:11434',
+  anthropic: 'https://api.anthropic.com',
+  gemini: 'https://generativelanguage.googleapis.com',
+  ollama: 'http://localhost:11434',
 }
 
 export const LIVE2D_STATE_LABELS: Record<Live2DState, string> = {
@@ -55,4 +55,9 @@ export const DEFAULT_SETTINGS: AppSettings = {
   backgroundOverlayOpacity: 0.5,
   defaultLayoutMode: 'chat',
   language: 'zh-CN',
+  fileAccessMode: 'compat',
+  fileAccessAllowAll: true,
+  fileAccessFolders: [],
+  fileAccessBlacklist: [],
+  live2dModels: [],
 }

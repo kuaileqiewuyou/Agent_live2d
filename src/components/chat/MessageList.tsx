@@ -48,10 +48,39 @@ function LoadingSkeleton() {
 }
 
 export function MessageList({ messages, layoutMode, isLoading }: MessageListProps) {
+  const scrollRootRef = useRef<HTMLDivElement>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
+  const previousTailRef = useRef<{ id: string, status: Message['status'] } | null>(null)
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+    const root = scrollRootRef.current
+    if (!root) return
+
+    const viewport = root.querySelector('[data-radix-scroll-area-viewport]') as HTMLElement | null
+    if (!viewport) return
+
+    const tail = messages.at(-1)
+    if (!tail) return
+
+    const previousTail = previousTailRef.current
+    const isFirstRender = previousTail === null
+    const isStreamingTail = tail.role === 'assistant' && tail.status === 'streaming'
+    const sameStreamingTail = Boolean(
+      previousTail
+      && previousTail.id === tail.id
+      && previousTail.status === 'streaming'
+      && isStreamingTail,
+    )
+    const distanceToBottom = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight
+    const nearBottom = distanceToBottom <= 96
+
+    // Keep following stream only when user is already near bottom.
+    if (isFirstRender || nearBottom || sameStreamingTail) {
+      const behavior: ScrollBehavior = sameStreamingTail || isFirstRender ? 'auto' : 'smooth'
+      viewport.scrollTo({ top: viewport.scrollHeight, behavior })
+    }
+
+    previousTailRef.current = { id: tail.id, status: tail.status }
   }, [messages])
 
   if (isLoading) {
@@ -71,8 +100,8 @@ export function MessageList({ messages, layoutMode, isLoading }: MessageListProp
   }
 
   return (
-    <ScrollArea className={cn('flex-1')}>
-      <div className="flex flex-col gap-1 py-4">
+    <ScrollArea ref={scrollRootRef} className={cn('flex-1 overflow-x-hidden')}>
+      <div className="flex flex-col gap-1 overflow-x-hidden py-4">
         {messages.map(message => (
           <MessageBubble key={message.id} message={message} layoutMode={layoutMode} />
         ))}

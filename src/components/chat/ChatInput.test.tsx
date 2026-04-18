@@ -526,6 +526,26 @@ describe('ChatInput manual tool guards', () => {
     expect(onSend).not.toHaveBeenCalled()
   })
 
+  it('uses readable Chinese label for clear-context action and keeps behavior', async () => {
+    const onSend = vi.fn()
+    const onClearContext = vi.fn()
+    render(
+      <ChatInput
+        conversationId="c-clear-context"
+        onSend={onSend}
+        onClearContext={onClearContext}
+        isSending={false}
+        placeholder="Message..."
+      />,
+    )
+
+    const clearButton = screen.getByLabelText('清空当前上下文')
+    await userEvent.click(clearButton)
+
+    expect(onClearContext).toHaveBeenCalledTimes(1)
+    expect(onSend).not.toHaveBeenCalled()
+  })
+
   it('keeps stop action available even when tool params are invalid during sending', async () => {
     seedDraft('c-stop-invalid', {
       id: 'req-stop-invalid',

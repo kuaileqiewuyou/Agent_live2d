@@ -14,7 +14,7 @@ import {
   WifiOff,
   Wrench,
 } from 'lucide-react'
-import type { MCPConnectionStatus, MCPServer } from '@/types'
+import type { MCPConnectionStatus, MCPSmokeResult, MCPServer } from '@/types'
 import { cn, formatTime } from '@/utils'
 import { MCP_TRANSPORT_LABELS } from '@/constants'
 import { Badge } from '@/components/ui/badge'
@@ -58,8 +58,11 @@ interface McpServerCardProps {
   server: MCPServer
   onToggle: (id: string, enabled: boolean) => void
   onCheckConnection: (id: string) => void
+  onSmokeConnection: (id: string) => void
   onDelete: (id: string) => void
   checking: boolean
+  smoking: boolean
+  smokeResult?: MCPSmokeResult
 }
 
 function sourceLabel(source?: string) {
@@ -99,8 +102,11 @@ export function McpServerCard({
   server,
   onToggle,
   onCheckConnection,
+  onSmokeConnection,
   onDelete,
   checking,
+  smoking,
+  smokeResult,
 }: McpServerCardProps) {
   const [expanded, setExpanded] = useState(false)
 
@@ -118,6 +124,26 @@ export function McpServerCard({
     (server.tools && server.tools.length > 0)
     || (server.resources && server.resources.length > 0)
     || (server.prompts && server.prompts.length > 0)
+
+  const smokeSummary = useMemo(() => {
+    if (!smokeResult) return null
+    const total = smokeResult.steps.length
+    const passed = smokeResult.steps.filter(step => step.ok).length
+    if (smokeResult.ok) {
+      const toolSuffix = smokeResult.usedToolName ? ` · 工具 ${smokeResult.usedToolName}` : ''
+      return {
+        variant: 'success' as const,
+        title: `一键验收通过：${passed}/${total} steps passed${toolSuffix}`,
+      }
+    }
+    const failedStep = smokeResult.steps.find(step => !step.ok && step.status !== 'skipped')
+      || smokeResult.steps.find(step => !step.ok)
+    const categorySuffix = failedStep?.errorCategory ? `（${failedStep.errorCategory}）` : ''
+    return {
+      variant: 'error' as const,
+      title: `一键验收失败：${failedStep?.name || 'unknown'}${categorySuffix}`,
+    }
+  }, [smokeResult])
 
   return (
     <Card
@@ -174,6 +200,19 @@ export function McpServerCard({
           </div>
         )}
 
+        {smokeSummary && (
+          <div
+            className={cn(
+              'mb-3 rounded-md border px-3 py-2 text-xs',
+              smokeSummary.variant === 'success'
+                ? 'border-emerald-500/20 bg-emerald-500/10 text-emerald-700'
+                : 'border-red-500/20 bg-red-500/10 text-red-700',
+            )}
+          >
+            {smokeSummary.title}
+          </div>
+        )}
+
         <div className="mb-3 flex flex-wrap items-center gap-3 text-xs text-(--color-muted-foreground)">
           <span className="flex items-center gap-1">
             <Wrench className="h-3.5 w-3.5" />
@@ -200,7 +239,7 @@ export function McpServerCard({
             size="sm"
             className="h-7 gap-1.5 text-xs"
             onClick={() => onCheckConnection(server.id)}
-            disabled={checking}
+            disabled={checking || smoking}
           >
             {checking ? (
               <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -208,6 +247,20 @@ export function McpServerCard({
               <Wifi className="h-3.5 w-3.5" />
             )}
             连接测试
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-7 gap-1.5 text-xs"
+            onClick={() => onSmokeConnection(server.id)}
+            disabled={checking || smoking}
+          >
+            {smoking ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <ShieldCheck className="h-3.5 w-3.5" />
+            )}
+            一键验收
           </Button>
           <Button
             variant="ghost"
@@ -251,6 +304,37 @@ export function McpServerCard({
                 <div>最近错误：{server.capabilityMeta?.lastError || '无'}</div>
               </div>
             </div>
+
+            {smokeResult && (
+              <div className="rounded-md border border-(--color-border) bg-(--color-muted)/20 p-3">
+                <div className="mb-2 flex items-center gap-1.5 text-xs font-medium text-(--color-muted-foreground)">
+                  <ShieldCheck className="h-3.5 w-3.5" />
+                  一键验收详情
+                </div>
+                <div className="mb-2 text-[11px] text-(--color-muted-foreground)">
+                  {smokeResult.summary || '无摘要'}
+                </div>
+                <div className="space-y-1.5">
+                  {smokeResult.steps.map(step => (
+                    <div
+                      key={step.name}
+                      className={cn(
+                        'rounded-md border px-2.5 py-1.5 text-[11px]',
+                        step.ok
+                          ? 'border-emerald-500/20 bg-emerald-500/5'
+                          : 'border-red-500/20 bg-red-500/5',
+                      )}
+                    >
+                      <div className="font-medium">
+                        {step.name} · {step.status}
+                        {step.errorCategory ? ` · ${step.errorCategory}` : ''}
+                      </div>
+                      <div className="text-(--color-muted-foreground)">{step.detail}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
 
             <div className="rounded-md border border-(--color-border) bg-(--color-muted)/20 p-3">
               <div className="mb-2 flex items-center gap-1.5 text-xs font-medium text-(--color-muted-foreground)">

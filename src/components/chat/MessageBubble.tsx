@@ -14,7 +14,7 @@ import {
   User,
   Wrench,
 } from 'lucide-react'
-import { cn } from '@/utils'
+import { cn, createSurfaceTintColor } from '@/utils'
 import type { ChatLayoutMode, ManualToolInputParams, Message } from '@/types'
 import { normalizeToolLabel } from '@/pages/chat/toolUsage'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
@@ -31,6 +31,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from '@/components/ui/tooltip'
+import { useChatAppearanceStore } from '@/stores'
 
 const MarkdownRenderer = lazy(async () => {
   const module = await import('@/components/chat/MarkdownRenderer')
@@ -201,7 +202,11 @@ function ToolTypeBadge({ type }: { type?: string }) {
 }
 
 function MarkdownFallback({ content }: { content: string }) {
-  return <div className="whitespace-pre-wrap break-words">{content}</div>
+  return (
+    <div className="min-w-0 whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
+      {content}
+    </div>
+  )
 }
 
 function containsMarkdown(content: string) {
@@ -447,6 +452,7 @@ function ToolReferenceSummary({ references, manualToolRequests }: ToolReferenceS
 export function MessageBubble({ message, layoutMode }: MessageBubbleProps) {
   const [copied, setCopied] = useState(false)
   const [reasoningOpen, setReasoningOpen] = useState(false)
+  const bubbleOpacity = useChatAppearanceStore((state) => state.bubbleOpacity)
 
   const shouldRenderMarkdown = useMemo(
     () => (!message.role || message.role === 'assistant')
@@ -504,6 +510,24 @@ export function MessageBubble({ message, layoutMode }: MessageBubbleProps) {
 
   const hasManualToolReferences = manualToolCount > 0 || manualToolRequests.length > 0
   const hasAutomaticToolReferences = automaticToolCount > 0
+  const assistantBubbleStyle = useMemo(
+    () => ({
+      backgroundColor: createSurfaceTintColor('--color-card', bubbleOpacity),
+    }),
+    [bubbleOpacity],
+  )
+  const userBubbleStyle = useMemo(
+    () => ({
+      backgroundColor: createSurfaceTintColor('--color-primary', bubbleOpacity),
+    }),
+    [bubbleOpacity],
+  )
+  const mutedBubbleStyle = useMemo(
+    () => ({
+      backgroundColor: createSurfaceTintColor('--color-muted', bubbleOpacity),
+    }),
+    [bubbleOpacity],
+  )
 
   const handleCopyMessage = async () => {
     await navigator.clipboard.writeText(message.content)
@@ -514,7 +538,10 @@ export function MessageBubble({ message, layoutMode }: MessageBubbleProps) {
   if (message.role === 'system') {
     return (
       <div className="flex justify-center py-2">
-        <div className="rounded-full bg-(--color-muted) px-4 py-1.5 text-xs text-(--color-muted-foreground)">
+        <div
+          className="rounded-full bg-(--color-muted)/80 px-4 py-1.5 text-xs text-(--color-muted-foreground) backdrop-blur-sm"
+          style={mutedBubbleStyle}
+        >
           {message.content}
         </div>
       </div>
@@ -538,9 +565,12 @@ export function MessageBubble({ message, layoutMode }: MessageBubbleProps) {
 
     return (
       <div className="flex justify-start px-4 py-1.5">
-        <Collapsible className="w-full max-w-[80%]">
+        <Collapsible className="min-w-0 w-full max-w-[80%]">
           <CollapsibleTrigger asChild>
-            <button className="flex w-full items-center gap-2 rounded-lg border border-(--color-border) bg-(--color-card) px-3 py-2 text-left text-sm transition-colors hover:bg-(--color-accent)">
+            <button
+              className="flex w-full items-center gap-2 rounded-lg border border-(--color-border) bg-(--color-card)/80 px-3 py-2 text-left text-sm backdrop-blur-sm transition-colors hover:bg-(--color-accent)"
+              style={assistantBubbleStyle}
+            >
               <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-(--color-muted)">
                 <Wrench className="h-4 w-4 text-(--color-muted-foreground)" />
               </div>
@@ -565,7 +595,10 @@ export function MessageBubble({ message, layoutMode }: MessageBubbleProps) {
             </button>
           </CollapsibleTrigger>
           <CollapsibleContent>
-            <div className="mt-1 ml-10 whitespace-pre-wrap break-all rounded-lg border border-(--color-border) bg-(--color-muted)/30 p-3 text-xs text-(--color-muted-foreground)">
+            <div
+              className="mt-1 ml-10 whitespace-pre-wrap break-all rounded-lg border border-(--color-border) bg-(--color-muted)/60 p-3 text-xs text-(--color-muted-foreground) backdrop-blur-sm"
+              style={mutedBubbleStyle}
+            >
               {message.content}
             </div>
           </CollapsibleContent>
@@ -577,13 +610,13 @@ export function MessageBubble({ message, layoutMode }: MessageBubbleProps) {
   if (message.status === 'error' && message.role === 'assistant') {
     return (
       <div className="flex justify-start px-4 py-1.5">
-        <div className="flex max-w-[80%] gap-3">
+        <div className="flex max-w-[80%] min-w-0 gap-3">
           <Avatar className="h-8 w-8 shrink-0">
             <AvatarFallback className="bg-red-100 text-xs text-red-600">
               <AlertTriangle className="h-4 w-4" />
             </AvatarFallback>
           </Avatar>
-          <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-900/50 dark:bg-red-950/30 dark:text-red-400">
+          <div className="min-w-0 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700 [overflow-wrap:anywhere] dark:border-red-900/50 dark:bg-red-950/30 dark:text-red-400">
             {message.content}
           </div>
         </div>
@@ -610,8 +643,11 @@ export function MessageBubble({ message, layoutMode }: MessageBubbleProps) {
   if (isCompanionBubble) {
     return (
       <div className="flex justify-center py-2">
-        <div className="relative max-w-xs">
-          <div className="rounded-2xl border border-(--color-border) bg-(--color-card) px-4 py-3 text-sm shadow-lg">
+        <div className="relative max-w-xs min-w-0">
+          <div
+            className="min-w-0 overflow-hidden rounded-2xl border border-(--color-border) bg-(--color-card)/80 px-4 py-3 text-sm shadow-lg backdrop-blur-sm"
+            style={assistantBubbleStyle}
+          >
             {assistantContent}
             <ToolReferenceSummary
               references={toolReferences}
@@ -619,7 +655,10 @@ export function MessageBubble({ message, layoutMode }: MessageBubbleProps) {
             />
             <StatusIndicator status={message.status} />
           </div>
-          <div className="absolute -bottom-2 left-1/2 h-4 w-4 -translate-x-1/2 rotate-45 border-r border-b border-(--color-border) bg-(--color-card)" />
+          <div
+            className="absolute -bottom-2 left-1/2 h-4 w-4 -translate-x-1/2 rotate-45 border-r border-b border-(--color-border) bg-(--color-card)/80 backdrop-blur-sm"
+            style={assistantBubbleStyle}
+          />
         </div>
       </div>
     )
@@ -647,7 +686,7 @@ export function MessageBubble({ message, layoutMode }: MessageBubbleProps) {
 
       <div
         className={cn(
-          'flex max-w-[75%] flex-col',
+          'flex max-w-[75%] min-w-0 flex-col',
           isUser ? 'items-end' : 'items-start',
         )}
       >
@@ -657,73 +696,78 @@ export function MessageBubble({ message, layoutMode }: MessageBubbleProps) {
           </span>
         )}
 
-        <div
-          className={cn(
-            'relative rounded-2xl px-4 py-2.5 text-sm leading-relaxed',
-            isUser
-              ? 'rounded-tr-sm bg-(--color-primary) text-(--color-primary-foreground)'
-              : 'rounded-tl-sm border border-(--color-border) bg-(--color-card) text-(--color-card-foreground)',
-          )}
-        >
-          {message.reasoning && (
-            <Collapsible open={reasoningOpen} onOpenChange={setReasoningOpen}>
-              <CollapsibleTrigger asChild>
-                <button className="mb-2 flex w-full items-center gap-1 text-left text-xs opacity-70 transition-opacity hover:opacity-100">
-                  {reasoningOpen ? (
-                    <ChevronDown className="h-3 w-3" />
-                  ) : (
-                    <ChevronRight className="h-3 w-3" />
-                  )}
-                  <span>推理过程</span>
-                </button>
-              </CollapsibleTrigger>
-              <CollapsibleContent>
-                <div className="mb-2 whitespace-pre-wrap rounded-lg bg-black/5 px-3 py-2 text-xs leading-relaxed opacity-80 dark:bg-white/5">
-                  {message.reasoning}
-                </div>
-              </CollapsibleContent>
-            </Collapsible>
-          )}
+        <div className="group/copy relative inline-block min-w-0 max-w-full">
+          <div
+            className={cn(
+              'min-w-0 overflow-hidden rounded-2xl px-4 py-2.5 text-sm leading-relaxed backdrop-blur-sm',
+              isUser
+                ? 'rounded-tr-sm bg-(--color-primary)/80 text-(--color-primary-foreground)'
+                : 'rounded-tl-sm border border-(--color-border) bg-(--color-card)/80 text-(--color-card-foreground)',
+            )}
+            style={isUser ? userBubbleStyle : assistantBubbleStyle}
+          >
+            {message.reasoning && (
+              <Collapsible open={reasoningOpen} onOpenChange={setReasoningOpen}>
+                <CollapsibleTrigger asChild>
+                  <button className="mb-2 flex w-full items-center gap-1 text-left text-xs opacity-70 transition-opacity hover:opacity-100">
+                    {reasoningOpen ? (
+                      <ChevronDown className="h-3 w-3" />
+                    ) : (
+                      <ChevronRight className="h-3 w-3" />
+                    )}
+                    <span>推理过程</span>
+                  </button>
+                </CollapsibleTrigger>
+                <CollapsibleContent>
+                  <div className="mb-2 whitespace-pre-wrap break-words rounded-lg bg-black/5 px-3 py-2 text-xs leading-relaxed opacity-80 [overflow-wrap:anywhere] dark:bg-white/5">
+                    {message.reasoning}
+                  </div>
+                </CollapsibleContent>
+              </Collapsible>
+            )}
 
-          {isUser ? (
-            <div className="whitespace-pre-wrap break-words">{message.content}</div>
-          ) : (
-            <>
-              {hasManualToolReferences && (
-                <div className="mb-2 flex flex-wrap items-center gap-2">
-                  <Badge variant="secondary" className="gap-1">
-                    <Wrench className="h-3 w-3" />
-                    本轮按你指定调用了 {manualToolCount} 个手动 Tool
-                  </Badge>
-                  {manualToolLabels.slice(0, 3).map(label => (
-                    <Badge key={label} variant="outline">
-                      {label}
+            {isUser ? (
+              <div className="whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
+                {message.content}
+              </div>
+            ) : (
+              <>
+                {hasManualToolReferences && (
+                  <div className="mb-2 flex flex-wrap items-center gap-2">
+                    <Badge variant="secondary" className="gap-1">
+                      <Wrench className="h-3 w-3" />
+                      本轮按你指定调用了 {manualToolCount} 个手动 Tool
                     </Badge>
-                  ))}
-                </div>
-              )}
-              {hasAutomaticToolReferences && (
-                <div className="mb-2 flex flex-wrap items-center gap-2">
-                  <Badge variant="outline" className="gap-1">
-                    <Wrench className="h-3 w-3" />
-                    本轮自动调用了 {automaticToolCount} 个自动 Tool
-                  </Badge>
-                  {automaticToolLabels.slice(0, 3).map(label => (
-                    <Badge key={`auto-${label}`} variant="outline">
-                      {label}
+                    {manualToolLabels.slice(0, 3).map(label => (
+                      <Badge key={label} variant="outline">
+                        {label}
+                      </Badge>
+                    ))}
+                  </div>
+                )}
+                {hasAutomaticToolReferences && (
+                  <div className="mb-2 flex flex-wrap items-center gap-2">
+                    <Badge variant="outline" className="gap-1">
+                      <Wrench className="h-3 w-3" />
+                      本轮自动调用了 {automaticToolCount} 个自动 Tool
                     </Badge>
-                  ))}
-                </div>
-              )}
-              {assistantContent}
-              <ToolReferenceSummary
-                references={toolReferences}
-                manualToolRequests={manualToolRequests}
-              />
-            </>
-          )}
+                    {automaticToolLabels.slice(0, 3).map(label => (
+                      <Badge key={`auto-${label}`} variant="outline">
+                        {label}
+                      </Badge>
+                    ))}
+                  </div>
+                )}
+                {assistantContent}
+                <ToolReferenceSummary
+                  references={toolReferences}
+                  manualToolRequests={manualToolRequests}
+                />
+              </>
+            )}
 
-          <StatusIndicator status={message.status} />
+            <StatusIndicator status={message.status} />
+          </div>
 
           <TooltipProvider delayDuration={300}>
             <Tooltip>
@@ -732,7 +776,7 @@ export function MessageBubble({ message, layoutMode }: MessageBubbleProps) {
                   variant="ghost"
                   size="icon"
                   className={cn(
-                    'absolute -bottom-3 h-6 w-6 rounded-full border border-(--color-border) bg-(--color-background) opacity-0 shadow-sm transition-opacity group-hover:opacity-100',
+                    'pointer-events-none absolute -bottom-3 h-6 w-6 rounded-full border border-(--color-border) bg-(--color-background)/65 text-(--color-muted-foreground) opacity-0 shadow-sm backdrop-blur-sm transition-opacity group-hover/copy:pointer-events-auto group-hover/copy:opacity-100 hover:bg-(--color-background)/85 focus-visible:pointer-events-auto focus-visible:opacity-100',
                     isUser ? '-left-3' : '-right-3',
                   )}
                   onClick={handleCopyMessage}

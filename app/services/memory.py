@@ -22,6 +22,12 @@ class MemoryApplicationService:
         await self.session.commit()
         return entity
 
+    async def delete_long_term(self, memory_id: str):
+        entity = await self.long_term_repo.get(memory_id, resource_name="long term memory")
+        await self.memory_service.delete_long_term_memory(entity)
+        await self.session.commit()
+        return {"deleted": True, "id": memory_id}
+
     async def search(self, payload: dict):
         return await self.memory_service.search_memories(payload)
 
@@ -35,4 +41,3 @@ class MemoryApplicationService:
 
     async def list_summaries(self, conversation_id: str):
         return await self.memory_service.list_summaries(conversation_id)
-

@@ -1,15 +1,35 @@
-import { Suspense, lazy, useMemo, useState } from 'react'
+import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AlertTriangle, ChevronDown, ChevronUp, Loader2, RefreshCw, Terminal } from 'lucide-react'
 import { Outlet } from 'react-router-dom'
 import { Sidebar } from '@/components/layout/Sidebar'
 import { useBackendHealth, LIKELY_DOWN_THRESHOLD } from '@/hooks'
 import { Button } from '@/components/ui/button'
-import { useSettingsStore, useUIStore } from '@/stores'
+import { useAppStore, useSettingsStore, useUIStore } from '@/stores'
+import { FileAccessPermissionDialog } from '@/components/common/FileAccessPermissionDialog'
 
 const NewConversationDialog = lazy(async () => {
   const module = await import('@/components/layout/NewConversationDialog')
   return { default: module.NewConversationDialog }
 })
+
+const SIDEBAR_DEFAULT_WIDTH = 280
+const SIDEBAR_MIN_WIDTH = 220
+const SIDEBAR_MAX_WIDTH = 460
+const SIDEBAR_COLLAPSED_WIDTH = 64
+const SIDEBAR_WIDTH_STORAGE_KEY = 'app.sidebarWidth'
+
+function clampSidebarWidth(value: number) {
+  return Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, value))
+}
+
+function readSidebarWidth() {
+  if (typeof window === 'undefined') return SIDEBAR_DEFAULT_WIDTH
+  const raw = window.localStorage.getItem(SIDEBAR_WIDTH_STORAGE_KEY)
+  if (raw === null) return SIDEBAR_DEFAULT_WIDTH
+  const parsed = Number(raw)
+  if (!Number.isFinite(parsed)) return SIDEBAR_DEFAULT_WIDTH
+  return clampSidebarWidth(parsed)
+}
 
 function formatCheckedAt(value: string | null) {
   if (!value) return '未检查'
@@ -69,6 +89,7 @@ const scenarioConfig: Record<OfflineScenario, {
 }
 
 export function AppLayout() {
+  const sidebarCollapsed = useAppStore((state) => state.sidebarCollapsed)
   const { settings } = useSettingsStore()
   const showNewConversationDialog = useUIStore((state) => state.showNewConversationDialog)
   const {
@@ -83,6 +104,11 @@ export function AppLayout() {
   } = useBackendHealth()
   const showBackendOfflineBanner = hasChecked && !isReachable
   const [healthDetailsOpen, setHealthDetailsOpen] = useState(false)
+  const [sidebarWidth, setSidebarWidth] = useState(readSidebarWidth)
+  const [isResizing, setIsResizing] = useState(false)
+  const resizeStateRef = useRef<{ startX: number, startWidth: number } | null>(null)
+  const pendingSidebarWidthRef = useRef(sidebarWidth)
+  const frameRef = useRef<number | null>(null)
 
   const scenario = useMemo(
     () => deriveScenario(wasConnected, consecutiveFailures),
@@ -104,6 +130,98 @@ export function AppLayout() {
     () => formatCheckedAt(lastCheckedAt),
     [lastCheckedAt],
   )
+
+  const persistSidebarWidth = useCallback((nextWidth: number) => {
+    if (typeof window === 'undefined') return
+    window.localStorage.setItem(SIDEBAR_WIDTH_STORAGE_KEY, String(nextWidth))
+  }, [])
+
+  const setResizeFeedback = useCallback((active: boolean) => {
+    if (typeof document === 'undefined') return
+    document.body.style.cursor = active ? 'col-resize' : ''
+    document.body.style.userSelect = active ? 'none' : ''
+  }, [])
+
+  const handleResizeStart = useCallback((event: { clientX: number, preventDefault: () => void }) => {
+    if (sidebarCollapsed) return
+    event.preventDefault()
+    pendingSidebarWidthRef.current = sidebarWidth
+    resizeStateRef.current = {
+      startX: event.clientX,
+      startWidth: sidebarWidth,
+    }
+    setIsResizing(true)
+    setResizeFeedback(true)
+  }, [setResizeFeedback, sidebarCollapsed, sidebarWidth])
+
+  const handleResetSidebarWidth = useCallback(() => {
+    if (frameRef.current !== null) {
+      window.cancelAnimationFrame(frameRef.current)
+      frameRef.current = null
+    }
+    resizeStateRef.current = null
+    setIsResizing(false)
+    setResizeFeedback(false)
+    const nextWidth = SIDEBAR_DEFAULT_WIDTH
+    pendingSidebarWidthRef.current = nextWidth
+    setSidebarWidth(nextWidth)
+    persistSidebarWidth(nextWidth)
+  }, [persistSidebarWidth, setResizeFeedback])
+
+  useEffect(() => {
+    function handleMouseMove(event: MouseEvent) {
+      const resizeState = resizeStateRef.current
+      if (!resizeState) return
+      const deltaX = event.clientX - resizeState.startX
+      const nextWidth = clampSidebarWidth(resizeState.startWidth + deltaX)
+      pendingSidebarWidthRef.current = nextWidth
+      if (frameRef.current !== null) return
+      frameRef.current = window.requestAnimationFrame(() => {
+        frameRef.current = null
+        setSidebarWidth(pendingSidebarWidthRef.current)
+      })
+    }
+
+    function handleMouseUp() {
+      if (!resizeStateRef.current) return
+      resizeStateRef.current = null
+      if (frameRef.current !== null) {
+        window.cancelAnimationFrame(frameRef.current)
+        frameRef.current = null
+      }
+      setSidebarWidth(pendingSidebarWidthRef.current)
+      persistSidebarWidth(pendingSidebarWidthRef.current)
+      setIsResizing(false)
+      setResizeFeedback(false)
+    }
+
+    window.addEventListener('mousemove', handleMouseMove)
+    window.addEventListener('mouseup', handleMouseUp)
+
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove)
+      window.removeEventListener('mouseup', handleMouseUp)
+      if (frameRef.current !== null) {
+        window.cancelAnimationFrame(frameRef.current)
+        frameRef.current = null
+      }
+      setResizeFeedback(false)
+    }
+  }, [persistSidebarWidth, setResizeFeedback])
+
+  useEffect(() => {
+    if (!sidebarCollapsed) return
+    resizeStateRef.current = null
+    if (frameRef.current !== null) {
+      window.cancelAnimationFrame(frameRef.current)
+      frameRef.current = null
+    }
+    pendingSidebarWidthRef.current = sidebarWidth
+    setIsResizing(false)
+    setResizeFeedback(false)
+  }, [setResizeFeedback, sidebarCollapsed, sidebarWidth])
+
+  const effectiveSidebarWidth = sidebarCollapsed ? SIDEBAR_COLLAPSED_WIDTH : sidebarWidth
 
   return (
     <div className="relative flex h-screen w-screen flex-col overflow-hidden">
@@ -199,7 +317,23 @@ export function AppLayout() {
       )}
 
       <div className="relative z-10 flex min-h-0 flex-1 w-full">
-        <Sidebar />
+        <div
+          data-testid="sidebar-shell"
+          className={`relative h-full shrink-0 ${isResizing ? '' : 'transition-[width] duration-200 ease-in-out'}`}
+          style={{ width: `${effectiveSidebarWidth}px` }}
+        >
+          <Sidebar />
+          {!sidebarCollapsed && (
+            <button
+              type="button"
+              aria-label="调整侧边栏宽度"
+              title="拖动调整宽度，双击恢复默认宽度"
+              onMouseDown={handleResizeStart}
+              onDoubleClick={handleResetSidebarWidth}
+              className="absolute -right-1 top-0 z-20 h-full w-2 cursor-col-resize rounded-full bg-transparent hover:bg-(--color-primary)/20"
+            />
+          )}
+        </div>
         <main className="min-w-0 flex-1 overflow-hidden">
           <Outlet />
         </main>
@@ -210,6 +344,8 @@ export function AppLayout() {
           <NewConversationDialog />
         </Suspense>
       )}
+
+      <FileAccessPermissionDialog />
     </div>
   )
 }

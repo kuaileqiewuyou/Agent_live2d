@@ -28,6 +28,13 @@
 - 提供统一 REST + SSE 接口
 - 支持 SQLite + Qdrant 的本地运行
 
+## Superpower-plus 协作约定（强制）
+
+- 本仓库严格遵循 superpower-plus
+- 任何任务都必须先走完整流程：`brainstorming -> writing-acceptance-criteria -> writing-plans -> executing-plans`
+- 未走流程不得改代码、配置、文档或测试，不存在“轻量任务直改”例外
+- 每次开始实现前，必须先给出：改动范围 / 验证命令 / 不改动文件清单
+
 ## 核心功能
 
 - 会话系统：创建、查询、更新、删除、绑定 Persona / Model / Skills / MCP / 布局模式
@@ -257,6 +264,7 @@ python -m pytest -q
 前端单元测试与 E2E（Playwright）：
 
 ```bash
+npm run check:text-encoding
 npm run test:unit
 npm run test:e2e:install
 npm run test:e2e
@@ -272,6 +280,7 @@ npm run test:e2e
 
 ```bash
 python -m pytest -q
+npm run check:text-encoding
 npm run test:unit
 npm run build
 npm run test:e2e
@@ -569,3 +578,76 @@ LangGraph state 的核心字段包括：
 - 将停止生成改造成更精细的取消控制
 - 增加 agent run trace、日志追踪和观测能力
 - 与前端 store 和 SSE 消费层做最终契约对齐
+
+
+## 常用终端命令速查（前后端联调）
+
+下面这组命令是日常开发最常用的组合，优先记这几个即可。
+
+### local 系列（推荐）
+
+- `npm run local:web`  
+  一键跑 Web 全链路。会先检查/拉起 Docker 后端（`app + qdrant`），再启动前端 Vite。
+- `npm run local:web:only`  
+  只启动前端，不操作 Docker 后端。适合你已经单独启动后端时使用。
+- `npm run local:up`  
+  只拉起 Docker 后端依赖（`app + qdrant`）。
+- `npm run local:check`  
+  只做后端健康检查。
+- `npm run local:down`  
+  停掉 Docker 服务。
+
+### 直接开发命令
+
+- `npm run backend:dev`  
+  直接启动 FastAPI（本地热重载）。
+- `npm run dev`  
+  直接启动前端 Vite。
+
+### Docker 命令
+
+- `npm run docker:up` / `npm run docker:up:d`  
+  以 compose 方式启动服务（前台/后台）。
+- `npm run docker:down`  
+  停止 compose 服务。
+- `npm run docker:logs`  
+  查看 `app` 与 `qdrant` 日志。
+
+### 测试与构建
+
+- `npm run test:unit`：前端单元测试
+- `npm run test:e2e`：端到端测试
+- `python -m pytest -q`：后端测试
+- `npm run build`：前端构建
+
+### 后端代码改动后，如何保证 local:web 生效
+
+`local:web` 在检测到后端已健康时，可能会跳过重建镜像。  
+如果你刚改了后端代码，建议强制重建：
+
+```powershell
+$env:LOCAL_FORCE_DOCKER_UP='1'
+$env:LOCAL_DOCKER_BUILD='1'
+npm run local:web
+```
+
+或手动重建后再启动前端：
+
+```powershell
+docker compose up --build -d app
+npm run local:web
+```
+
+### 最稳的双终端开发模式（不依赖 Docker 重建）
+
+终端 A：
+
+```bash
+npm run backend:dev
+```
+
+终端 B：
+
+```bash
+npm run local:web:only
+```

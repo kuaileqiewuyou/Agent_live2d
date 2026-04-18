@@ -30,9 +30,17 @@ const MemoryPage = lazy(async () => {
   const module = await import('@/pages/MemoryPage')
   return { default: module.MemoryPage }
 })
+const Live2DModelsPage = lazy(async () => {
+  const module = await import('@/pages/Live2DModelsPage')
+  return { default: module.Live2DModelsPage }
+})
 const SettingsPage = lazy(async () => {
   const module = await import('@/pages/SettingsPage')
   return { default: module.SettingsPage }
+})
+const FileAccessPage = lazy(async () => {
+  const module = await import('@/pages/FileAccessPage')
+  return { default: module.FileAccessPage }
 })
 
 function PageFallback() {
@@ -88,8 +96,10 @@ export function App() {
             <Route path="/model-config" element={<ModelConfigPage />} />
             <Route path="/skills" element={<SkillsPage />} />
             <Route path="/mcp" element={<McpPage />} />
+            <Route path="/live2d" element={<Live2DModelsPage />} />
             <Route path="/memory" element={<MemoryPage />} />
             <Route path="/settings" element={<SettingsPage />} />
+            <Route path="/settings/file-access" element={<FileAccessPage />} />
           </Route>
         </Routes>
       </Suspense>

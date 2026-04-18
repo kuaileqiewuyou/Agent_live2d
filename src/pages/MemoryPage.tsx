@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+﻿import { useEffect, useMemo, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import {
   Brain,
@@ -9,12 +9,14 @@ import {
   Plus,
   ScrollText,
   Search,
+  Trash2,
   UserRound,
   X,
 } from 'lucide-react'
 import { conversationService, memoryService, personaService } from '@/services'
 import { useNotificationStore } from '@/stores'
 import type { Conversation, LongTermMemory, Persona } from '@/types'
+import { ApiRequestError } from '@/api/errors'
 import { isMemoryVectorFallbackError } from '@/utils/memory-fallback'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -43,9 +45,30 @@ function scopeLabel(scope: string) {
   }
 }
 
+function shortPreview(content: string, maxLength = 80) {
+  if (content.length <= maxLength) {
+    return content
+  }
+  return `${content.slice(0, maxLength)}...`
+}
+
+function isLongTermMemoryNotFound(error: unknown): boolean {
+  if (!(error instanceof ApiRequestError)) {
+    return false
+  }
+  if (error.code !== 'not_found') {
+    return false
+  }
+  return error.message.toLowerCase().includes('long term memory not found')
+}
+
+function isDeleteEndpointNotAvailable(error: unknown): boolean {
+  return error instanceof ApiRequestError && error.code === 'not_found' && !isLongTermMemoryNotFound(error)
+}
+
 export function MemoryPage() {
   const navigate = useNavigate()
-  const pushNotification = useNotificationStore((state) => state.push)
+  const pushNotification = useNotificationStore(state => state.push)
   const [searchParams, setSearchParams] = useSearchParams()
 
   const [memories, setMemories] = useState<LongTermMemory[]>([])
@@ -62,6 +85,7 @@ export function MemoryPage() {
   const [isSearching, setIsSearching] = useState(false)
   const [isCreating, setIsCreating] = useState(false)
   const [isSummarizing, setIsSummarizing] = useState(false)
+  const [deletingMemoryId, setDeletingMemoryId] = useState<string | null>(null)
 
   useEffect(() => {
     async function load() {
@@ -164,6 +188,14 @@ export function MemoryPage() {
   async function refreshMemories() {
     const next = await memoryService.listLongTermMemories()
     setMemories(next)
+    setSearchResults((prev) => {
+      if (prev === null) {
+        return null
+      }
+      const activeIds = new Set(next.map(item => item.id))
+      return prev.filter(item => activeIds.has(item.id))
+    })
+    return next
   }
 
   async function handleSearch() {
@@ -189,10 +221,11 @@ export function MemoryPage() {
         pushNotification({
           type: 'info',
           title: '记忆检索已降级',
-          description: '向量检索暂不可用，已切换到本地过滤模式，不影响继续聊天。',
+          description: '向量检索暂不可用，已自动切换到本地过滤模式，不影响继续聊天。',
         })
         return
       }
+
       pushNotification({
         type: 'error',
         title: '搜索记忆失败',
@@ -264,6 +297,80 @@ export function MemoryPage() {
     }
   }
 
+  async function handleDelete(memory: LongTermMemory) {
+    const confirmed = window.confirm(
+      `确认删除这条长期记忆吗？\n\n${shortPreview(memory.content)}`,
+    )
+    if (!confirmed) {
+      return
+    }
+
+    setDeletingMemoryId(memory.id)
+    let deletedOrMissing = false
+    let missingByResourceState = false
+    try {
+      await memoryService.deleteLongTermMemory(memory.id)
+      deletedOrMissing = true
+    }
+    catch (error) {
+      if (isLongTermMemoryNotFound(error)) {
+        deletedOrMissing = true
+        missingByResourceState = true
+      }
+      else if (isDeleteEndpointNotAvailable(error)) {
+        pushNotification({
+          type: 'error',
+          title: '后端不支持删除接口',
+          description: '请重启本地后端后重试，确保已加载最新代码。',
+        })
+        return
+      }
+      else {
+        pushNotification({
+          type: 'error',
+          title: '删除记忆失败',
+          description: error instanceof Error ? error.message : '请稍后再试。',
+        })
+        return
+      }
+    }
+
+    if (!deletedOrMissing) {
+      return
+    }
+
+    try {
+      const latestMemories = await refreshMemories()
+      const stillExists = latestMemories.some(item => item.id === memory.id)
+      if (stillExists) {
+        pushNotification({
+          type: 'error',
+          title: '删除未生效',
+          description: '列表中仍存在该记忆。可能连接到旧后端或数据尚未同步。',
+        })
+        return
+      }
+
+      pushNotification({
+        type: missingByResourceState ? 'info' : 'success',
+        title: missingByResourceState ? '该记忆已不存在' : '记忆已删除',
+        description: missingByResourceState
+          ? '该记忆已被删除或不存在，列表已刷新。'
+          : '该长期记忆已从本地记录中移除。',
+      })
+    }
+    catch (error) {
+      pushNotification({
+        type: 'error',
+        title: '删除后刷新失败',
+        description: error instanceof Error ? error.message : '删除请求已发送，但刷新列表失败，请稍后再试。',
+      })
+    }
+    finally {
+      setDeletingMemoryId(null)
+    }
+  }
+
   async function handleSummarize() {
     if (!conversationId) {
       pushNotification({
@@ -297,7 +404,10 @@ export function MemoryPage() {
   }
 
   return (
-    <div className="flex h-full flex-col gap-6 overflow-hidden px-6 py-6">
+    <div
+      data-testid="memory-page-scroll-root"
+      className="flex h-full flex-col gap-6 overflow-y-auto px-6 py-6"
+    >
       <div className="flex items-center justify-between gap-4">
         <div className="flex items-center gap-3">
           <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-(--color-primary)/10">
@@ -319,7 +429,7 @@ export function MemoryPage() {
 
       <Card className="border-emerald-500/30 bg-emerald-500/5">
         <CardContent className="py-3 text-xs text-emerald-700">
-          若向量服务（Qdrant）临时不可用，记忆检索会自动降级到本地过滤，不影响聊天主链路。
+          若向量服务（Qdrant）暂时不可用，记忆检索会自动降级到本地过滤，不影响聊天主链路。
         </CardContent>
       </Card>
 
@@ -514,80 +624,88 @@ export function MemoryPage() {
         </Card>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-hidden">
-        <Card className="flex h-full flex-col">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2 text-base">
-              <Database className="h-4 w-4" />
-              {searchResults ? '搜索结果' : '长期记忆列表'}
-            </CardTitle>
-            <CardDescription>
-              {searchResults
-                ? `当前显示 ${displayItems.length} 条语义搜索结果。`
-                : `当前显示 ${displayItems.length} 条记忆${activeFilters.length > 0 ? '，已按上下文自动收窄。' : '。'}`}
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="min-h-0 flex-1 overflow-y-auto">
-            <div className="space-y-3">
-              {displayItems.map(item => (
-                <div key={item.id} className="rounded-xl border border-(--color-border) bg-(--color-card) p-4">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <Badge variant="secondary">{scopeLabel(item.memoryScope)}</Badge>
-                    {item.personaId && (
-                      <Badge variant="outline">
-                        人设：{personaMap.get(item.personaId) || item.personaId}
-                      </Badge>
-                    )}
-                    {item.conversationId && (
-                      <Badge variant="outline">
-                        会话：{conversationMap.get(item.conversationId) || item.conversationId}
-                      </Badge>
-                    )}
-                    <span className="text-xs text-(--color-muted-foreground)">
-                      {formatDate(item.createdAt)}
-                    </span>
-                  </div>
-
-                  <div className="mt-3 whitespace-pre-wrap text-sm leading-6">
-                    {item.content}
-                  </div>
-
-                  <div className="mt-3 flex flex-wrap items-center gap-2">
-                    {item.tags.length > 0 && item.tags.map(tag => (
-                      <Badge key={tag} variant="outline">#{tag}</Badge>
-                    ))}
-                    {item.conversationId && (
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        className="gap-1"
-                        onClick={() => navigate(`/chat/${item.conversationId}`)}
-                      >
-                        <ExternalLink className="h-3.5 w-3.5" />
-                        打开关联会话
-                      </Button>
-                    )}
-                  </div>
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-base">
+            <Database className="h-4 w-4" />
+            {searchResults ? '搜索结果' : '长期记忆列表'}
+          </CardTitle>
+          <CardDescription>
+            {searchResults
+              ? `当前显示 ${displayItems.length} 条语义搜索结果。`
+              : `当前显示 ${displayItems.length} 条记忆${activeFilters.length > 0 ? '，已按上下文自动收窄。' : '。'}`}
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div className="space-y-3">
+            {displayItems.map(item => (
+              <div key={item.id} className="rounded-xl border border-(--color-border) bg-(--color-card) p-4">
+                <div className="flex flex-wrap items-center gap-2">
+                  <Badge variant="secondary">{scopeLabel(item.memoryScope)}</Badge>
+                  {item.personaId && (
+                    <Badge variant="outline">
+                      人设：{personaMap.get(item.personaId) || item.personaId}
+                    </Badge>
+                  )}
+                  {item.conversationId && (
+                    <Badge variant="outline">
+                      会话：{conversationMap.get(item.conversationId) || item.conversationId}
+                    </Badge>
+                  )}
+                  <span className="ml-auto text-xs text-(--color-muted-foreground)">
+                    {formatDate(item.createdAt)}
+                  </span>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => void handleDelete(item)}
+                    disabled={deletingMemoryId === item.id}
+                    aria-label="删除这条记忆"
+                  >
+                    <Trash2 className="h-4 w-4" />
+                    {deletingMemoryId === item.id ? '删除中...' : '删除'}
+                  </Button>
                 </div>
-              ))}
 
-              {displayItems.length === 0 && (
-                <div className="flex flex-col items-center justify-center py-14 text-(--color-muted-foreground)">
-                  <ScrollText className="mb-3 h-10 w-10 opacity-30" />
-                  <p className="text-sm font-medium">
-                    {searchResults ? '没有命中相关记忆' : '还没有可展示的记忆内容'}
-                  </p>
-                  <p className="mt-2 max-w-md text-center text-xs leading-5">
-                    {activeFilters.length > 0
-                      ? '试试放宽筛选条件，或者先为当前会话生成摘要、手动写入一条长期记忆。'
-                      : '你可以从聊天页手动记住一条消息，或者在这里补充重要偏好与事实。'}
-                  </p>
+                <div className="mt-3 whitespace-pre-wrap text-sm leading-6">
+                  {item.content}
                 </div>
-              )}
-            </div>
-          </CardContent>
-        </Card>
-      </div>
+
+                <div className="mt-3 flex flex-wrap items-center gap-2">
+                  {item.tags.length > 0 && item.tags.map(tag => (
+                    <Badge key={tag} variant="outline">#{tag}</Badge>
+                  ))}
+                  {item.conversationId && (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="gap-1"
+                      onClick={() => navigate(`/chat/${item.conversationId}`)}
+                    >
+                      <ExternalLink className="h-3.5 w-3.5" />
+                      打开关联会话
+                    </Button>
+                  )}
+                </div>
+              </div>
+            ))}
+
+            {displayItems.length === 0 && (
+              <div className="flex flex-col items-center justify-center py-14 text-(--color-muted-foreground)">
+                <ScrollText className="mb-3 h-10 w-10 opacity-30" />
+                <p className="text-sm font-medium">
+                  {searchResults ? '没有命中相关记忆' : '还没有可展示的记忆内容'}
+                </p>
+                <p className="mt-2 max-w-md text-center text-xs leading-5">
+                  {activeFilters.length > 0
+                    ? '试试放宽筛选条件，或者先为当前会话生成摘要、手动写入一条长期记忆。'
+                    : '你可以从聊天页手动记住一条消息，或者在这里补充重要偏好与事实。'}
+                </p>
+              </div>
+            )}
+          </div>
+        </CardContent>
+      </Card>
     </div>
   )
 }

@@ -1,4 +1,11 @@
-﻿import type { MCPServer, MCPServerAdvancedConfig, MCPServerCreateInput } from '@/types'
+﻿import type {
+  MCPSmokeRequest,
+  MCPSmokeResult,
+  MCPSmokeStep,
+  MCPServer,
+  MCPServerAdvancedConfig,
+  MCPServerCreateInput,
+} from '@/types'
 import { apiRequest, isMockMode } from '@/api'
 import { mockMcpServers } from '@/mock'
 import { generateId } from '@/utils'
@@ -207,6 +214,57 @@ async function checkConnection(
   return { success: res.data.ok, message: res.data.detail }
 }
 
+function normalizeSmokeStep(step: any): MCPSmokeStep {
+  return {
+    name: typeof step?.name === 'string' ? step.name : 'unknown',
+    ok: Boolean(step?.ok),
+    status: typeof step?.status === 'string' ? step.status : (step?.ok ? 'passed' : 'failed'),
+    detail: typeof step?.detail === 'string' ? step.detail : '',
+    errorCategory: typeof step?.errorCategory === 'string' ? step.errorCategory : undefined,
+    details: step?.details && typeof step.details === 'object' ? step.details : undefined,
+  }
+}
+
+function normalizeSmokeResult(data: any): MCPSmokeResult {
+  const steps = Array.isArray(data?.steps) ? data.steps.map(normalizeSmokeStep) : []
+  return {
+    ok: Boolean(data?.ok),
+    status: typeof data?.status === 'string' ? data.status : (data?.ok ? 'connected' : 'error'),
+    steps,
+    usedToolName: typeof data?.usedToolName === 'string' && data.usedToolName.trim()
+      ? data.usedToolName
+      : undefined,
+    summary: typeof data?.summary === 'string' ? data.summary : '',
+  }
+}
+
+async function smokeConnection(
+  id: string,
+  payload?: MCPSmokeRequest,
+): Promise<MCPSmokeResult> {
+  if (isMockMode()) {
+    await new Promise(resolve => setTimeout(resolve, 600))
+    const usedToolName = payload?.toolName || 'mock.echo'
+    return {
+      ok: true,
+      status: 'connected',
+      usedToolName,
+      summary: '3/3 steps passed',
+      steps: [
+        { name: 'initialize', ok: true, status: 'passed', detail: 'initialize ok' },
+        { name: 'tools/list', ok: true, status: 'passed', detail: 'found 1 tool(s)' },
+        { name: 'tools/call', ok: true, status: 'passed', detail: 'tool call completed' },
+      ],
+    }
+  }
+
+  const res = await apiRequest<any>(`/api/mcp/servers/${id}/smoke`, {
+    method: 'POST',
+    ...(payload ? { body: JSON.stringify(payload) } : {}),
+  })
+  return normalizeSmokeResult(res.data)
+}
+
 export const mcpService = {
   getMcpServers,
   getMcpServer,
@@ -214,5 +272,7 @@ export const mcpService = {
   deleteMcpServer,
   toggleMcpServer,
   checkConnection,
+  smokeConnection,
 }
+
 

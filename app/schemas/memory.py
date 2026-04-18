@@ -41,3 +41,8 @@ class MemorySummaryRead(TimestampedSchema):
     conversation_id: str
     summary: str
     source_message_count: int
+
+
+class MemoryDeleteResult(CamelModel):
+    deleted: bool
+    id: str

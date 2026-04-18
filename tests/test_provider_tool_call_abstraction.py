@@ -279,6 +279,70 @@ def test_openai_stream_chat_with_tools_prefers_real_stream(monkeypatch):
     assert any("hello-stream" in str(item.get("content", "")) for item in chunks)
 
 
+def test_openai_stream_chat_accepts_message_content_chunk(monkeypatch):
+    provider = OpenAICompatibleProvider(
+        base_url="http://localhost:11434/v1",
+        api_key="key",
+        model="gpt-test",
+        extra_config={},
+    )
+
+    async def fake_stream(_payload):
+        yield {"choices": [{"message": {"content": "hello-alt-format"}}]}
+
+    async def fail_request(_payload):
+        raise AssertionError("non-stream fallback should not be used")
+
+    monkeypatch.setattr(provider, "_stream_chat_completion", fake_stream)
+    monkeypatch.setattr(provider, "_request_chat_completion", fail_request)
+
+    async def collect():
+        chunks = []
+        async for chunk in provider.stream_chat([{"role": "user", "content": "hi"}]):
+            chunks.append(chunk)
+        return chunks
+
+    chunks = asyncio.run(collect())
+    assert any("hello-alt-format" in str(item.get("content", "")) for item in chunks)
+
+
+def test_openai_stream_chat_falls_back_to_non_stream_when_stream_has_no_tokens(monkeypatch):
+    provider = OpenAICompatibleProvider(
+        base_url="http://localhost:11434/v1",
+        api_key="key",
+        model="gpt-test",
+        extra_config={},
+    )
+
+    async def fake_stream(_payload):
+        yield {"choices": [{"delta": {}}]}
+
+    async def fake_request(_payload):
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "content": "fallback-stream-by-chunks",
+                        "tool_calls": [],
+                    }
+                }
+            ]
+        }
+
+    monkeypatch.setattr(provider, "_stream_chat_completion", fake_stream)
+    monkeypatch.setattr(provider, "_request_chat_completion", fake_request)
+
+    async def collect():
+        chunks = []
+        async for chunk in provider.stream_chat([{"role": "user", "content": "hi"}]):
+            chunks.append(chunk)
+        return chunks
+
+    chunks = asyncio.run(collect())
+    full_text = "".join(str(item.get("content", "")) for item in chunks if item.get("type") == "token")
+    assert "fallback-stream-by-chunks" in full_text
+
+
 def test_ollama_stream_chat_with_tools_prefers_real_stream(monkeypatch):
     provider = OllamaProvider(
         base_url="http://localhost:11434",

@@ -22,6 +22,53 @@ function createMessage(
 }
 
 describe('handleStreamFailure', () => {
+  it('does not fallback send when user actively cancelled this turn', async () => {
+    const persisted = createMessage('persisted-1', 'user', 'hello')
+    const transient = createMessage('transient-1', 'assistant', 'streaming', { transient: true })
+    transient.status = 'streaming'
+    const setMessages = vi.fn()
+    const pushNotification = vi.fn()
+    const loadConversation = vi.fn(async (_conversationId: string) => {})
+    const sendFallbackMessage = vi.fn(async (): Promise<ChatTurn> => ({
+      userMessage: createMessage('fallback-user', 'user', 'u'),
+      assistantMessage: createMessage('fallback-assistant', 'assistant', 'a'),
+    }))
+    const updateMessage = vi.fn()
+
+    const result = await handleStreamFailure({
+      streamAcceptedByServer: false,
+      cancelledByUser: true,
+      conversationId: 'c-1',
+      nonce: 110,
+      assistantId: 'assistant-temp',
+      content: 'hello',
+      getCurrentMessages: () => [persisted, transient],
+      setMessages,
+      dropTransientMessages: messages => messages.filter(message => !message.metadata?.transient),
+      createTransientMessage: (conversationId, id, role, content, overrides = {}) => ({
+        ...createMessage(id, role, content),
+        conversationId,
+        ...overrides,
+      }),
+      loadConversation,
+      sendFallbackMessage,
+      updateMessage,
+      pushNotification,
+    })
+
+    expect(result).toBe('stream-interrupted')
+    expect(sendFallbackMessage).not.toHaveBeenCalled()
+    expect(loadConversation).not.toHaveBeenCalled()
+    expect(updateMessage).not.toHaveBeenCalled()
+    expect(pushNotification).not.toHaveBeenCalled()
+    expect(setMessages).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        expect.objectContaining({ id: 'persisted-1' }),
+        expect.objectContaining({ id: 'stopped-110', role: 'system' }),
+      ]),
+    )
+  })
+
   it('refreshes conversation and exits when request is already in progress', async () => {
     const setMessages = vi.fn()
     const pushNotification = vi.fn()

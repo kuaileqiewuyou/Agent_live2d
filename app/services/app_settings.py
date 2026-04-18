@@ -7,6 +7,7 @@ from typing import ClassVar
 
 from app.config import get_settings
 from app.schemas.app_settings import AppSettingsRead
+from app.core.file_access_guard import FileAccessGuard
 
 logger = logging.getLogger(__name__)
 
@@ -23,13 +24,15 @@ class AppSettingsService:
 
     async def get_settings(self) -> AppSettingsRead:
         payload = await self._read_payload()
-        return AppSettingsRead.model_validate(payload)
+        normalized_payload = self._normalize_settings_payload(payload)
+        return AppSettingsRead.model_validate(normalized_payload)
 
     async def update_settings(self, payload: dict) -> AppSettingsRead:
         async with self._lock:
             current = (await self.get_settings()).model_dump()
             current.update(payload)
-            normalized = AppSettingsRead.model_validate(current)
+            normalized_payload = self._normalize_settings_payload(current)
+            normalized = AppSettingsRead.model_validate(normalized_payload)
             await self._write_payload(normalized.model_dump(by_alias=False))
             return normalized
 
@@ -47,9 +50,35 @@ class AppSettingsService:
             await self._backup_corrupted_file(raw)
             return self.defaults.model_dump()
 
+        if not isinstance(data, dict):
+            return self.defaults.model_dump()
+
+        if "file_access_allow_all" not in data:
+            raw_folders = FileAccessGuard.normalize_folders(data.get("file_access_folders"))
+            data["file_access_allow_all"] = len(raw_folders) == 0
+
         merged = self.defaults.model_dump()
         merged.update(data)
         return merged
+
+    def _normalize_settings_payload(self, payload: dict) -> dict:
+        normalized = self.defaults.model_dump()
+        payload_dict = payload if isinstance(payload, dict) else {}
+        normalized.update(payload_dict)
+        normalized["file_access_mode"] = "compat"
+        normalized["file_access_folders"] = FileAccessGuard.normalize_folders(
+            normalized.get("file_access_folders"),
+        )
+        normalized["file_access_blacklist"] = FileAccessGuard.normalize_folders(
+            normalized.get("file_access_blacklist"),
+        )
+        allow_all = normalized.get("file_access_allow_all")
+        if not isinstance(allow_all, bool):
+            allow_all = True
+        if "file_access_allow_all" not in payload_dict and "file_access_folders" in payload_dict:
+            allow_all = len(normalized["file_access_folders"]) == 0
+        normalized["file_access_allow_all"] = allow_all
+        return normalized
 
     async def _write_payload(self, payload: dict) -> None:
         content = json.dumps(payload, ensure_ascii=False, indent=2)

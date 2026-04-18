@@ -2,6 +2,7 @@ export type MCPTransportType = 'stdio' | 'http'
 export type MCPConnectionStatus = 'connected' | 'disconnected' | 'checking' | 'error'
 export type MCPAuthType = 'none' | 'bearer' | 'basic' | 'apiKey'
 export type MCPCapabilitySource = 'probe' | 'cache' | 'unknown'
+export type MCPSmokeErrorCategory = 'config' | 'auth' | 'permission' | 'server' | 'runtime'
 
 export interface MCPTool {
   name: string
@@ -67,4 +68,26 @@ export interface MCPServerCreateInput {
   address: string
   enabled: boolean
   advancedConfig?: MCPServerAdvancedConfig
+}
+
+export interface MCPSmokeStep {
+  name: string
+  ok: boolean
+  status: string
+  detail: string
+  errorCategory?: MCPSmokeErrorCategory
+  details?: Record<string, unknown>
+}
+
+export interface MCPSmokeResult {
+  ok: boolean
+  status: string
+  steps: MCPSmokeStep[]
+  usedToolName?: string
+  summary: string
+}
+
+export interface MCPSmokeRequest {
+  toolName?: string
+  toolArguments?: Record<string, unknown>
 }

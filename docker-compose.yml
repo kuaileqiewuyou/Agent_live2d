@@ -3,6 +3,9 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-}
+        PIP_EXTRA_INDEX_URL: ${PIP_EXTRA_INDEX_URL:-}
     container_name: agent-live2d-backend
     ports:
       - "${APP_HOST_PORT:-8001}:8001"

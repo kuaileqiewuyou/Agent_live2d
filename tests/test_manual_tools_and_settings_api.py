@@ -1,3 +1,4 @@
+import json
 import os
 from pathlib import Path
 
@@ -172,6 +173,10 @@ def test_settings_get_patch_roundtrip(client):
     assert initial.status_code == 200
     initial_data = initial.json()["data"]
     assert initial_data["theme"] in ("light", "dark", "system")
+    assert initial_data["fileAccessMode"] == "compat"
+    assert initial_data["fileAccessAllowAll"] is True
+    assert initial_data["fileAccessFolders"] == []
+    assert initial_data["fileAccessBlacklist"] == []
 
     patch = client.patch(
         "/api/settings",
@@ -181,6 +186,18 @@ def test_settings_get_patch_roundtrip(client):
             "backgroundBlur": 6,
             "backgroundOverlayOpacity": 0.2,
             "defaultLayoutMode": "companion",
+            "fileAccessMode": "compat",
+            "fileAccessAllowAll": False,
+            "fileAccessFolders": [
+                "d:\\Else\\live2d\\",
+                "D:/Else/live2d",
+                "D:/Else/live2d/sub/",
+                "relative/path",
+            ],
+            "fileAccessBlacklist": [
+                "D:/Else/live2d/private/",
+                "d:/Else/live2d/private",
+            ],
         },
     )
     assert patch.status_code == 200
@@ -193,6 +210,10 @@ def test_settings_get_patch_roundtrip(client):
     assert data["backgroundBlur"] == 6
     assert data["backgroundOverlayOpacity"] == 0.2
     assert data["defaultLayoutMode"] == "companion"
+    assert data["fileAccessMode"] == "compat"
+    assert data["fileAccessAllowAll"] is False
+    assert data["fileAccessFolders"] == ["D:/Else/live2d", "D:/Else/live2d/sub"]
+    assert data["fileAccessBlacklist"] == ["D:/Else/live2d/private"]
 
 
 def test_settings_recover_from_corrupted_file_and_patch_success(client):
@@ -221,6 +242,48 @@ def test_settings_recover_from_corrupted_file_and_patch_success(client):
     data = client.get("/api/settings").json()["data"]
     assert data["backgroundOverlayOpacity"] == 0.65
     assert data["backgroundBlur"] == 8
+
+
+def test_settings_legacy_file_access_allow_all_inference(client):
+    data_dir = Path(os.environ["DATA_DIR"])
+    settings_file = data_dir / "app_settings.json"
+    data_dir.mkdir(parents=True, exist_ok=True)
+
+    settings_file.write_text(
+        json.dumps(
+            {
+                "theme": "dark",
+                "file_access_folders": ["d:\\Else\\live2d\\", "D:/Else/live2d"],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    with_folders = client.get("/api/settings")
+    assert with_folders.status_code == 200
+    with_folders_data = with_folders.json()["data"]
+    assert with_folders_data["fileAccessAllowAll"] is False
+    assert with_folders_data["fileAccessFolders"] == ["D:/Else/live2d"]
+    assert with_folders_data["fileAccessBlacklist"] == []
+
+    settings_file.write_text(
+        json.dumps(
+            {
+                "theme": "dark",
+                "file_access_folders": [],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    empty_folders = client.get("/api/settings")
+    assert empty_folders.status_code == 200
+    empty_folders_data = empty_folders.json()["data"]
+    assert empty_folders_data["fileAccessAllowAll"] is True
+    assert empty_folders_data["fileAccessFolders"] == []
+    assert empty_folders_data["fileAccessBlacklist"] == []
 
 
 def test_settings_patch_retries_replace_on_permission_error(client, monkeypatch):

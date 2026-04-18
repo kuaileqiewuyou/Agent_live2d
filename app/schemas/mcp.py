@@ -53,3 +53,25 @@ class MCPServerCheckResult(CamelModel):
     prompt_count: int
     detail: str
     used_cache: bool = False
+
+
+class MCPServerSmokeRequest(CamelModel):
+    tool_name: str | None = None
+    tool_arguments: dict | None = None
+
+
+class MCPServerSmokeStep(CamelModel):
+    name: str
+    ok: bool
+    status: str
+    detail: str
+    error_category: str | None = None
+    details: dict | None = None
+
+
+class MCPServerSmokeResult(CamelModel):
+    ok: bool
+    status: str
+    steps: list[MCPServerSmokeStep] = Field(default_factory=list)
+    used_tool_name: str | None = None
+    summary: str = ""

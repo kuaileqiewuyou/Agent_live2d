@@ -57,3 +57,18 @@ class ConversationRepository(SQLAlchemyRepository[Conversation]):
             .limit(limit)
         )
         return [title for title in result.scalars().all() if title]
+
+    async def count_by_model_config_id(self, model_config_id: str) -> int:
+        result = await self.session.execute(
+            select(func.count(Conversation.id)).where(Conversation.model_config_id == model_config_id)
+        )
+        return int(result.scalar_one())
+
+    async def list_titles_by_model_config_id(self, model_config_id: str, limit: int = 3) -> list[str]:
+        result = await self.session.execute(
+            select(Conversation.title)
+            .where(Conversation.model_config_id == model_config_id)
+            .order_by(Conversation.updated_at.desc())
+            .limit(limit)
+        )
+        return [title for title in result.scalars().all() if title]

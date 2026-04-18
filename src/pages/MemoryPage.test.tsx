@@ -1,14 +1,16 @@
-/* @vitest-environment jsdom */
+﻿/* @vitest-environment jsdom */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryPage } from '@/pages/MemoryPage'
+import { ApiRequestError } from '@/api/errors'
 import type { Conversation, LongTermMemory, Persona } from '@/types'
 
 const listLongTermMemoriesMock = vi.fn()
 const searchMemoriesMock = vi.fn()
 const createLongTermMemoryMock = vi.fn()
+const deleteLongTermMemoryMock = vi.fn()
 const summarizeConversationMock = vi.fn()
 const getPersonasMock = vi.fn()
 const getConversationsMock = vi.fn()
@@ -21,6 +23,7 @@ vi.mock('@/services', () => ({
     listLongTermMemories: (...args: unknown[]) => listLongTermMemoriesMock(...args),
     searchMemories: (...args: unknown[]) => searchMemoriesMock(...args),
     createLongTermMemory: (...args: unknown[]) => createLongTermMemoryMock(...args),
+    deleteLongTermMemory: (...args: unknown[]) => deleteLongTermMemoryMock(...args),
     summarizeConversation: (...args: unknown[]) => summarizeConversationMock(...args),
   },
   personaService: {
@@ -89,6 +92,7 @@ describe('MemoryPage', () => {
     listLongTermMemoriesMock.mockReset()
     searchMemoriesMock.mockReset()
     createLongTermMemoryMock.mockReset()
+    deleteLongTermMemoryMock.mockReset()
     summarizeConversationMock.mockReset()
     getPersonasMock.mockReset()
     getConversationsMock.mockReset()
@@ -101,15 +105,19 @@ describe('MemoryPage', () => {
     getConversationsMock.mockResolvedValue([baseConversation])
     searchMemoriesMock.mockResolvedValue([baseMemory])
     createLongTermMemoryMock.mockResolvedValue(baseMemory)
+    deleteLongTermMemoryMock.mockResolvedValue({ deleted: true, id: baseMemory.id })
     summarizeConversationMock.mockResolvedValue({
       id: 'sum-1',
       summary: 'summary',
       sourceMessageCount: 2,
     })
+
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
   })
 
   afterEach(() => {
     cleanup()
+    vi.restoreAllMocks()
   })
 
   it('renders memory list and triggers semantic search', async () => {
@@ -127,6 +135,16 @@ describe('MemoryPage', () => {
         query: '简洁',
       }))
     })
+  })
+
+  it('uses a page-level scroll container for wheel scrolling', async () => {
+    render(<MemoryPage />)
+
+    await waitFor(() => {
+      expect(listLongTermMemoriesMock).toHaveBeenCalled()
+    })
+    const scrollRoot = screen.getByTestId('memory-page-scroll-root')
+    expect(scrollRoot.className).toContain('overflow-y-auto')
   })
 
   it('supports manual long-term memory write and refreshes list', async () => {
@@ -177,5 +195,112 @@ describe('MemoryPage', () => {
       }))
     })
     expect(screen.getByText('用户喜欢简洁直接的回复。')).toBeTruthy()
+  })
+
+  it('deletes a memory with confirmation and refreshes list', async () => {
+    listLongTermMemoriesMock
+      .mockResolvedValueOnce([baseMemory])
+      .mockResolvedValueOnce([])
+
+    render(<MemoryPage />)
+    await screen.findByText('用户喜欢简洁直接的回复。')
+
+    await userEvent.click(screen.getByRole('button', { name: '删除这条记忆' }))
+
+    await waitFor(() => {
+      expect(deleteLongTermMemoryMock).toHaveBeenCalledWith('mem-1')
+    })
+    await waitFor(() => {
+      expect(listLongTermMemoriesMock).toHaveBeenCalledTimes(2)
+    })
+    await waitFor(() => {
+      expect(screen.queryByText('用户喜欢简洁直接的回复。')).toBeNull()
+    })
+    expect(pushNotificationMock).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'success',
+      title: '记忆已删除',
+    }))
+  })
+
+  it('treats resource-level not_found as already deleted when refresh no longer contains item', async () => {
+    deleteLongTermMemoryMock.mockRejectedValue(
+      new ApiRequestError('long term memory not found', { code: 'not_found', status: 404 }),
+    )
+    listLongTermMemoriesMock
+      .mockResolvedValueOnce([baseMemory])
+      .mockResolvedValueOnce([])
+
+    render(<MemoryPage />)
+    await screen.findByText('用户喜欢简洁直接的回复。')
+
+    await userEvent.click(screen.getByRole('button', { name: '删除这条记忆' }))
+
+    await waitFor(() => {
+      expect(deleteLongTermMemoryMock).toHaveBeenCalledWith('mem-1')
+    })
+    await waitFor(() => {
+      expect(listLongTermMemoriesMock).toHaveBeenCalledTimes(2)
+    })
+    expect(pushNotificationMock).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'info',
+      title: '该记忆已不存在',
+    }))
+  })
+
+  it('shows backend-upgrade hint when delete endpoint is unavailable (route-level 404)', async () => {
+    deleteLongTermMemoryMock.mockRejectedValue(
+      new ApiRequestError('请求的资源不存在。', { code: 'not_found', status: 404 }),
+    )
+
+    render(<MemoryPage />)
+    await screen.findByText('用户喜欢简洁直接的回复。')
+
+    await userEvent.click(screen.getByRole('button', { name: '删除这条记忆' }))
+
+    await waitFor(() => {
+      expect(deleteLongTermMemoryMock).toHaveBeenCalledWith('mem-1')
+    })
+    expect(listLongTermMemoriesMock).toHaveBeenCalledTimes(1)
+    expect(pushNotificationMock).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'error',
+      title: '后端不支持删除接口',
+    }))
+  })
+
+  it('shows mismatch warning when delete succeeds but refreshed list still contains item', async () => {
+    listLongTermMemoriesMock
+      .mockResolvedValueOnce([baseMemory])
+      .mockResolvedValueOnce([baseMemory])
+
+    render(<MemoryPage />)
+    await screen.findByText('用户喜欢简洁直接的回复。')
+
+    await userEvent.click(screen.getByRole('button', { name: '删除这条记忆' }))
+
+    await waitFor(() => {
+      expect(deleteLongTermMemoryMock).toHaveBeenCalledWith('mem-1')
+    })
+    await waitFor(() => {
+      expect(listLongTermMemoriesMock).toHaveBeenCalledTimes(2)
+    })
+    expect(pushNotificationMock).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'error',
+      title: '删除未生效',
+    }))
+    expect(pushNotificationMock).not.toHaveBeenCalledWith(expect.objectContaining({
+      type: 'success',
+      title: '记忆已删除',
+    }))
+  })
+
+  it('does not delete memory when confirmation is cancelled', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(false)
+
+    render(<MemoryPage />)
+    await screen.findByText('用户喜欢简洁直接的回复。')
+
+    await userEvent.click(screen.getByRole('button', { name: '删除这条记忆' }))
+
+    expect(deleteLongTermMemoryMock).not.toHaveBeenCalled()
   })
 })

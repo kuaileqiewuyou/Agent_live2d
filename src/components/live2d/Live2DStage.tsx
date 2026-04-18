@@ -69,7 +69,7 @@ function ErrorOverlay({ message, compact }: { message?: string; compact?: boolea
       <AlertCircle className={cn('text-red-400/70', compact ? 'h-4 w-4' : 'h-6 w-6')} />
       <span
         className={cn(
-          'line-clamp-3 text-center leading-4 text-(--color-muted-foreground)',
+          'max-h-24 overflow-auto break-all text-center leading-4 text-(--color-muted-foreground)',
           compact ? 'text-[9px]' : 'text-[11px]',
         )}
       >
@@ -104,14 +104,16 @@ function AvatarArea({
   compact?: boolean
 }) {
   if (hasModel) {
-    if (modelStatus === 'loading') {
-      return <LoadingSkeleton sizeClass={sizeClass} />
-    }
     return (
       <div
         ref={containerRef}
-        className={cn('relative overflow-hidden rounded-2xl bg-(--color-muted)/20', sizeClass)}
+        className={cn('relative z-0 isolate overflow-hidden rounded-2xl bg-(--color-muted)/20 [contain:layout_paint_size]', sizeClass)}
       >
+        {modelStatus === 'loading' && (
+          <div className="absolute inset-0 z-10">
+            <LoadingSkeleton sizeClass="h-full w-full" />
+          </div>
+        )}
         {modelStatus === 'error' && <ErrorOverlay message={modelError} compact={compact} />}
       </div>
     )

@@ -10,7 +10,7 @@ interface MarkdownRendererProps {
 export function MarkdownRenderer({
   content,
   code,
-  className = 'prose prose-sm max-w-none break-words [&>*:first-child]:mt-0 [&>*:last-child]:mb-0 dark:prose-invert',
+  className = 'prose prose-sm max-w-none break-words [overflow-wrap:anywhere] [&>*:first-child]:mt-0 [&>*:last-child]:mb-0 dark:prose-invert',
 }: MarkdownRendererProps) {
   return (
     <div className={className}>

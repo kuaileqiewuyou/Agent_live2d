@@ -1,13 +1,15 @@
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.errors import ConflictError
 from app.providers import ProviderFactory
-from app.repositories import ModelConfigRepository
+from app.repositories import ConversationRepository, ModelConfigRepository
 
 
 class ModelConfigService:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
         self.repo = ModelConfigRepository(session)
+        self.conversation_repo = ConversationRepository(session)
 
     async def list_configs(self):
         return await self.repo.list()
@@ -32,6 +34,16 @@ class ModelConfigService:
 
     async def delete_config(self, config_id: str):
         entity = await self.get_config(config_id)
+        linked_conversation_count = await self.conversation_repo.count_by_model_config_id(config_id)
+        if linked_conversation_count > 0:
+            sample_titles = await self.conversation_repo.list_titles_by_model_config_id(config_id, limit=3)
+            sample_text = " / ".join(sample_titles) if sample_titles else "N/A"
+            suffix = " ..." if linked_conversation_count > len(sample_titles) else ""
+            raise ConflictError(
+                f"Model Config is used by {linked_conversation_count} Conversation(s): "
+                f"{sample_text}{suffix}. "
+                "Please switch Model Config in those Conversations before deleting."
+            )
         await self.repo.delete(entity)
         await self.session.commit()
 
@@ -45,4 +57,3 @@ class ModelConfigService:
             "model": config.model,
             "detail": result["detail"],
         }
-

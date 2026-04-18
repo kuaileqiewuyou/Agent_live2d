@@ -1,5 +1,6 @@
 import { apiRequest } from '@/api'
 import type {
+  MemoryDeleteResult,
   LongTermMemory,
   LongTermMemoryCreateInput,
   MemorySearchInput,
@@ -40,9 +41,17 @@ async function summarizeConversation(conversationId: string): Promise<MemorySumm
   return res.data
 }
 
+async function deleteLongTermMemory(memoryId: string): Promise<MemoryDeleteResult> {
+  const res = await apiRequest<MemoryDeleteResult>(`/api/memory/long-term/${memoryId}`, {
+    method: 'DELETE',
+  })
+  return res.data
+}
+
 export const memoryService = {
   listLongTermMemories,
   createLongTermMemory,
   searchMemories,
   summarizeConversation,
+  deleteLongTermMemory,
 }

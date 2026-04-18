@@ -1,8 +1,14 @@
 import { useEffect, useRef, useState } from 'react'
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
-import { Brain, Cable, MoreHorizontal, Pencil, Pin, Sparkles, Trash2 } from 'lucide-react'
+import { Brain, Cable, MoreHorizontal, Pencil, Pin, Plus, Sparkles, Trash2 } from 'lucide-react'
 import { cn, formatTime } from '@/utils'
-import { conversationService, memoryService } from '@/services'
+import {
+  conversationService,
+  createNewOpsConversation,
+  getExistingOpsPersonaId,
+  memoryService,
+  OPS_PERSONA_NAME,
+} from '@/services'
 import { useConversationStore, useNotificationStore } from '@/stores'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import { Badge } from '@/components/ui/badge'
@@ -36,6 +42,8 @@ export function ConversationList({ collapsed }: ConversationListProps) {
   const [renamingId, setRenamingId] = useState<string | null>(null)
   const [renameValue, setRenameValue] = useState('')
   const [memoryCountMap, setMemoryCountMap] = useState<Record<string, number>>({})
+  const [opsPersonaId, setOpsPersonaId] = useState<string | null>(null)
+  const [isCreatingOpsConversation, setIsCreatingOpsConversation] = useState(false)
   const lastAutoFocusKeyRef = useRef('')
   const adjustedSearchForPersonaFilterRef = useRef('')
   const personaFilterId = searchParams.get('personaId')?.trim() || ''
@@ -58,9 +66,10 @@ export function ConversationList({ collapsed }: ConversationListProps) {
 
   async function loadConversations() {
     try {
-      const [conversationItems, memories] = await Promise.all([
+      const [conversationItems, memories, nextOpsPersonaId] = await Promise.all([
         conversationService.getConversations(),
         memoryService.listLongTermMemories(),
+        getExistingOpsPersonaId().catch(() => null),
       ])
 
       const nextMemoryCountMap = memories.reduce<Record<string, number>>((acc, memory) => {
@@ -71,6 +80,7 @@ export function ConversationList({ collapsed }: ConversationListProps) {
 
       setConversations(conversationItems)
       setMemoryCountMap(nextMemoryCountMap)
+      setOpsPersonaId(nextOpsPersonaId)
     }
     catch (error) {
       pushNotification({
@@ -86,12 +96,19 @@ export function ConversationList({ collapsed }: ConversationListProps) {
     : conversations
 
   const filtered = personaMatched.filter((conversation) => {
-    const matchesSearch = conversation.title.toLowerCase().includes(searchQuery.toLowerCase())
-    return matchesSearch
+    return conversation.title.toLowerCase().includes(searchQuery.toLowerCase())
   })
 
-  const pinned = filtered.filter(conversation => conversation.pinned)
-  const unpinned = filtered.filter(conversation => !conversation.pinned)
+  const opsConversations = opsPersonaId
+    ? filtered.filter(conversation => conversation.personaId === opsPersonaId)
+    : []
+
+  const regularConversations = filtered.filter(
+    conversation => !opsPersonaId || conversation.personaId !== opsPersonaId,
+  )
+
+  const pinned = regularConversations.filter(conversation => conversation.pinned)
+  const unpinned = regularConversations.filter(conversation => !conversation.pinned)
 
   useEffect(() => {
     if (!personaFilterId) {
@@ -116,7 +133,7 @@ export function ConversationList({ collapsed }: ConversationListProps) {
     pushNotification({
       type: 'info',
       title: '已清空会话搜索',
-      description: '为展示当前 Persona 相关 Conversations，已临时清空搜索词。',
+      description: '为了展示当前 Persona 相关会话，已临时清空搜索词。',
     })
   }, [
     filtered.length,
@@ -148,8 +165,8 @@ export function ConversationList({ collapsed }: ConversationListProps) {
 
     pushNotification({
       type: 'info',
-      title: '已自动定位 Conversation',
-      description: `已为当前 Persona 过滤定位到「${firstConversation.title}」。`,
+      title: '已自动定位会话',
+      description: `已为当前 Persona 过滤定位到 “${firstConversation.title}”。`,
     })
 
     const query = searchParams.toString()
@@ -239,6 +256,29 @@ export function ConversationList({ collapsed }: ConversationListProps) {
     }
   }
 
+  async function handleCreateOpsConversation() {
+    setIsCreatingOpsConversation(true)
+    try {
+      const conversation = await createNewOpsConversation()
+      await loadConversations()
+      navigate(`/chat/${conversation.id}`)
+      pushNotification({
+        type: 'success',
+        title: '已新建运维会话',
+      })
+    }
+    catch (error) {
+      pushNotification({
+        type: 'error',
+        title: '新建运维会话失败',
+        description: error instanceof Error ? error.message : '请稍后重试。',
+      })
+    }
+    finally {
+      setIsCreatingOpsConversation(false)
+    }
+  }
+
   function startRename(id: string, currentTitle: string) {
     setRenamingId(id)
     setRenameValue(currentTitle)
@@ -284,7 +324,7 @@ export function ConversationList({ collapsed }: ConversationListProps) {
       </div>
 
       <ScrollArea className="flex-1">
-        <div className="px-2 pb-2">
+        <div className="overflow-x-hidden px-2 pb-2">
           {pinned.length > 0 && (
             <div>
               <div className="px-2 py-1.5 text-xs font-medium text-(--color-muted-foreground)">
@@ -354,6 +394,50 @@ export function ConversationList({ collapsed }: ConversationListProps) {
                 : (personaFilterId ? '当前 Persona 过滤下没有会话。' : '还没有会话，先创建一个吧。')}
             </div>
           )}
+
+          <div className="mt-3 border-t border-(--color-border) pt-2">
+            <div className="flex items-center justify-between px-2 py-1.5 text-xs font-medium text-(--color-muted-foreground)">
+              <span>{OPS_PERSONA_NAME}</span>
+              <button
+                type="button"
+                className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-(--color-primary) hover:bg-(--color-muted) disabled:cursor-not-allowed disabled:opacity-60"
+                onClick={() => void handleCreateOpsConversation()}
+                disabled={isCreatingOpsConversation}
+              >
+                <Plus className="h-3 w-3" />
+                {isCreatingOpsConversation ? '创建中...' : '新建'}
+              </button>
+            </div>
+
+            {opsConversations.length > 0 ? (
+              opsConversations.map(conversation => (
+                <ConversationItem
+                  key={conversation.id}
+                  title={conversation.title}
+                  lastMessage={conversation.lastMessage}
+                  updatedAt={conversation.updatedAt}
+                  pinned={conversation.pinned}
+                  skillCount={conversation.enabledSkillIds.length}
+                  mcpCount={conversation.enabledMcpServerIds.length}
+                  memoryCount={memoryCountMap[conversation.id] || 0}
+                  isActive={conversationId === conversation.id}
+                  isRenaming={renamingId === conversation.id}
+                  renameValue={renameValue}
+                  onRenameValueChange={setRenameValue}
+                  onClick={() => navigate(`/chat/${conversation.id}`)}
+                  onStartRename={() => startRename(conversation.id, conversation.title)}
+                  onConfirmRename={() => handleRename(conversation.id)}
+                  onCancelRename={cancelRename}
+                  onTogglePin={() => handleTogglePin(conversation.id, conversation.pinned)}
+                  onDelete={() => handleDelete(conversation.id)}
+                />
+              ))
+            ) : (
+              <div className="px-3 py-2 text-[11px] text-(--color-muted-foreground)">
+                暂无运维助手会话。
+              </div>
+            )}
+          </div>
         </div>
       </ScrollArea>
     </div>
@@ -402,7 +486,7 @@ function ConversationItem({
   return (
     <div
       className={cn(
-        'group flex cursor-pointer items-start gap-2.5 rounded-md px-2 py-2 transition-colors hover:bg-(--color-accent)',
+        'group flex w-full min-w-0 cursor-pointer items-start gap-2.5 overflow-hidden rounded-md px-2 py-2 transition-colors hover:bg-(--color-accent)',
         isActive && 'bg-(--color-accent) text-(--color-accent-foreground)',
       )}
       onClick={onClick}
@@ -412,7 +496,7 @@ function ConversationItem({
       </Avatar>
 
       <div className="min-w-0 flex-1">
-        <div className="flex items-center justify-between gap-1">
+        <div className="flex min-w-0 items-center justify-between gap-1">
           {isRenaming ? (
             <Input
               value={renameValue}
@@ -427,9 +511,11 @@ function ConversationItem({
               autoFocus
             />
           ) : (
-            <span className="flex items-center gap-1 truncate text-sm font-medium">
+            <span className="flex min-w-0 flex-1 items-center gap-1 text-sm font-medium">
               {pinned && <Pin className="h-3 w-3 shrink-0 text-(--color-muted-foreground)" />}
-              {title}
+              <span className="min-w-0 overflow-hidden text-ellipsis [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:1] [overflow-wrap:anywhere]">
+                {title}
+              </span>
             </span>
           )}
           <span className="shrink-0 text-[10px] text-(--color-muted-foreground)">
@@ -438,7 +524,7 @@ function ConversationItem({
         </div>
 
         {lastMessage && (
-          <p className="mt-0.5 truncate text-xs text-(--color-muted-foreground)">
+          <p className="mt-0.5 overflow-hidden text-xs text-(--color-muted-foreground) [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:1] [overflow-wrap:anywhere]">
             {lastMessage}
           </p>
         )}
@@ -465,16 +551,17 @@ function ConversationItem({
         </div>
       </div>
 
-      <DropdownMenu>
-        <DropdownMenuTrigger asChild>
-          <button
-            className="mt-0.5 shrink-0 rounded p-0.5 opacity-0 transition-opacity hover:bg-(--color-muted) group-hover:opacity-100"
-            onClick={event => event.stopPropagation()}
-          >
-            <MoreHorizontal className="h-4 w-4 text-(--color-muted-foreground)" />
-          </button>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent align="end" className="w-36">
+      <div className="shrink-0">
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <button
+              className="mt-0.5 shrink-0 rounded p-0.5 opacity-0 transition-opacity hover:bg-(--color-muted) group-hover:opacity-100 focus-visible:opacity-100"
+              onClick={event => event.stopPropagation()}
+            >
+              <MoreHorizontal className="h-4 w-4 text-(--color-muted-foreground)" />
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="w-36">
           <DropdownMenuItem
             onClick={(event) => {
               event.stopPropagation()
@@ -503,8 +590,9 @@ function ConversationItem({
             <Trash2 className="h-4 w-4" />
             删除
           </DropdownMenuItem>
-        </DropdownMenuContent>
-      </DropdownMenu>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </div>
     </div>
   )
 }

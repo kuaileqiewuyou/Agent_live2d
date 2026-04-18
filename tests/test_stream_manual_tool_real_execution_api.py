@@ -147,7 +147,17 @@ def test_stream_manual_tool_requests_real_execution(monkeypatch, client):
     def fake_get_executor(_name: str):
         return DummySkillExecutor()
 
-    async def fake_call_tool(*, transport_type, endpoint_or_command, tool_name, arguments, config=None):
+    async def fake_call_tool(
+        *,
+        transport_type,
+        endpoint_or_command,
+        tool_name,
+        arguments,
+        config=None,
+        file_access_allow_all=None,
+        file_access_folders=None,
+        file_access_blacklist=None,
+    ):
         assert transport_type == "http"
         assert endpoint_or_command == "http://127.0.0.1:3901/mcp"
         assert tool_name == "echo"
@@ -155,6 +165,9 @@ def test_stream_manual_tool_requests_real_execution(monkeypatch, client):
         assert isinstance(config, dict)
         assert config.get("timeoutMs") == 1200
         assert config.get("headers", {}).get("X-Trace-Id") == "stream-tool-test"
+        assert file_access_allow_all is True
+        assert file_access_folders == []
+        assert file_access_blacklist == []
         return {
             "ok": True,
             "detail": "tool call completed",
@@ -242,7 +255,20 @@ def test_stream_manual_tool_requests_failure_does_not_block_final_answer(monkeyp
     def fake_get_executor(_name: str):
         return FailingSkillExecutor()
 
-    async def fake_call_tool(*, transport_type, endpoint_or_command, tool_name, arguments, config=None):
+    async def fake_call_tool(
+        *,
+        transport_type,
+        endpoint_or_command,
+        tool_name,
+        arguments,
+        config=None,
+        file_access_allow_all=None,
+        file_access_folders=None,
+        file_access_blacklist=None,
+    ):
+        assert file_access_allow_all is True
+        assert file_access_folders == []
+        assert file_access_blacklist == []
         return {
             "ok": False,
             "detail": "mcp timeout",
@@ -315,7 +341,20 @@ def test_stream_manual_mcp_not_ready_degrades_to_placeholder_without_blocking_fi
     assert check.json()["data"]["ok"] is False
     assert check.json()["data"]["status"] == "error"
 
-    async def fail_if_called(*, transport_type, endpoint_or_command, tool_name, arguments, config=None):
+    async def fail_if_called(
+        *,
+        transport_type,
+        endpoint_or_command,
+        tool_name,
+        arguments,
+        config=None,
+        file_access_allow_all=None,
+        file_access_folders=None,
+        file_access_blacklist=None,
+    ):
+        assert file_access_allow_all is True
+        assert file_access_folders == []
+        assert file_access_blacklist == []
         raise AssertionError("call_tool should not be called when MCP server status is error")
 
     monkeypatch.setattr(_MCP_CLIENT, "call_tool", fail_if_called)

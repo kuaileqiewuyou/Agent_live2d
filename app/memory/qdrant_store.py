@@ -67,3 +67,10 @@ class QdrantMemoryStore:
             }
             for item in result
         ]
+
+    async def delete_memory(self, *, memory_id: str) -> None:
+        await self.ensure_collection()
+        await self.client.delete(
+            collection_name=self.collection_name,
+            points_selector=qmodels.PointIdsList(points=[memory_id]),
+        )

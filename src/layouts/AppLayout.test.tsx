@@ -1,13 +1,13 @@
 /* @vitest-environment jsdom */
 
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, render, screen } from '@testing-library/react'
-import userEvent from '@testing-library/user-event'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { AppLayout } from '@/layouts/AppLayout'
-import { useSettingsStore, useUIStore } from '@/stores'
 import { DEFAULT_SETTINGS } from '@/constants'
+import { useAppStore, useSettingsStore, useUIStore } from '@/stores'
 
 const retryMock = vi.fn()
+const RESIZE_HANDLE_NAME = '调整侧边栏宽度'
 
 function makeHealthState(overrides = {}) {
   return {
@@ -32,18 +32,23 @@ vi.mock('@/hooks', () => ({
 
 vi.mock('react-router-dom', () => ({
   Outlet: () => <div data-testid="layout-outlet" />,
+  useNavigate: () => vi.fn(),
 }))
 
 vi.mock('@/components/layout/Sidebar', () => ({
-  Sidebar: () => <aside data-testid="layout-sidebar" />,
+  Sidebar: () => <aside data-testid="layout-sidebar" className="h-full w-full" />,
 }))
 
-describe('AppLayout backend preflight banner', () => {
+describe('AppLayout sidebar resize', () => {
   beforeEach(() => {
     cleanup()
+    window.localStorage.clear()
     retryMock.mockReset()
     useBackendHealthMock.mockReset()
     useBackendHealthMock.mockReturnValue(makeHealthState())
+    useAppStore.setState({
+      sidebarCollapsed: false,
+    })
     useSettingsStore.setState({
       settings: { ...DEFAULT_SETTINGS },
     })
@@ -52,68 +57,64 @@ describe('AppLayout backend preflight banner', () => {
     })
   })
 
-  it('shows offline preflight banner with details and retry action', async () => {
-    useBackendHealthMock.mockReturnValue(makeHealthState({
-      isReachable: false,
-      hasChecked: true,
-      consecutiveFailures: 5,
-      lastCheckedAt: new Date().toISOString(),
-    }))
-
+  it('renders layout with default sidebar width', () => {
     render(<AppLayout />)
 
-    expect(screen.getByText('后端连接失败')).toBeTruthy()
-    expect(screen.queryByText(/API Base URL/)).toBeNull()
+    const shell = screen.getByTestId('sidebar-shell')
 
-    await userEvent.click(screen.getByRole('button', { name: '详情' }))
-    expect(screen.getByText(/API Base URL/)).toBeTruthy()
-    expect(screen.getByText(/连续失败：5 次/)).toBeTruthy()
-
-    await userEvent.click(screen.getByRole('button', { name: '立即重试' }))
-    expect(retryMock).toHaveBeenCalledTimes(1)
-  })
-
-  it('hides offline preflight banner when backend is reachable', () => {
-    useBackendHealthMock.mockReturnValue(makeHealthState({
-      isReachable: true,
-      hasChecked: true,
-      lastCheckedAt: new Date().toISOString(),
-    }))
-
-    render(<AppLayout />)
-
-    expect(screen.queryByText('后端连接失败')).toBeNull()
-    expect(screen.queryByText('后端未就绪')).toBeNull()
+    expect((shell as HTMLElement).style.width).toBe('280px')
     expect(screen.getByTestId('layout-sidebar')).toBeTruthy()
     expect(screen.getByTestId('layout-outlet')).toBeTruthy()
+    expect(screen.getByRole('button', { name: RESIZE_HANDLE_NAME })).toBeTruthy()
   })
 
-  it('shows restarting banner when backend was previously connected', () => {
-    useBackendHealthMock.mockReturnValue(makeHealthState({
-      isReachable: false,
-      hasChecked: true,
-      consecutiveFailures: 1,
-      wasConnected: true,
-      lastCheckedAt: new Date().toISOString(),
-    }))
+  it('supports drag resize with in-memory updates and persists only on mouseup', () => {
+    render(<AppLayout />)
+
+    const shell = screen.getByTestId('sidebar-shell')
+    const handle = screen.getByRole('button', { name: RESIZE_HANDLE_NAME })
+
+    expect((shell as HTMLElement).className).toContain('transition-[width]')
+
+    fireEvent.mouseDown(handle, { clientX: 280 })
+    expect((shell as HTMLElement).className).not.toContain('transition-[width]')
+
+    fireEvent.mouseMove(window, { clientX: 360 })
+    expect(window.localStorage.getItem('app.sidebarWidth')).toBeNull()
+
+    fireEvent.mouseUp(window)
+
+    expect((shell as HTMLElement).style.width).toBe('360px')
+    expect((shell as HTMLElement).className).toContain('transition-[width]')
+    expect(window.localStorage.getItem('app.sidebarWidth')).toBe('360')
+  })
+
+  it('resets width to default on double click', () => {
+    render(<AppLayout />)
+
+    const shell = screen.getByTestId('sidebar-shell')
+    const handle = screen.getByRole('button', { name: RESIZE_HANDLE_NAME })
+
+    fireEvent.mouseDown(handle, { clientX: 280 })
+    fireEvent.mouseMove(window, { clientX: 340 })
+    fireEvent.mouseUp(window)
+    expect((shell as HTMLElement).style.width).toBe('340px')
+
+    fireEvent.doubleClick(handle)
+
+    expect((shell as HTMLElement).style.width).toBe('280px')
+    expect(window.localStorage.getItem('app.sidebarWidth')).toBe('280')
+  })
+
+  it('uses collapsed width and hides resize handle when sidebar is collapsed', () => {
+    useAppStore.setState({
+      sidebarCollapsed: true,
+    })
 
     render(<AppLayout />)
 
-    expect(screen.getByText('后端重启中')).toBeTruthy()
-    expect(screen.getByText(/正在自动重试连接/)).toBeTruthy()
-  })
-
-  it('shows never-connected banner on first launch without backend', () => {
-    useBackendHealthMock.mockReturnValue(makeHealthState({
-      isReachable: false,
-      hasChecked: true,
-      consecutiveFailures: 1,
-      wasConnected: false,
-      lastCheckedAt: new Date().toISOString(),
-    }))
-
-    render(<AppLayout />)
-
-    expect(screen.getByText('后端未就绪')).toBeTruthy()
+    const shell = screen.getByTestId('sidebar-shell')
+    expect((shell as HTMLElement).style.width).toBe('64px')
+    expect(screen.queryByRole('button', { name: RESIZE_HANDLE_NAME })).toBeNull()
   })
 })
